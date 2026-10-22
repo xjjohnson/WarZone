@@ -26,8 +26,26 @@ const MULT = {
 };
 const TW = { inf: 1, art: 0.45, arm: 1, air: 0.8 };   // how likely a type is to take hits
 const K_DMG = 0.16;
-const CAPTURE_T = 14;      // seconds of unopposed occupation to take a province
-const MAX_LVL = 3;
+const CAPTURE_T = 20;      // base seconds of unopposed occupation to take a province
+const MAX_LVL = 3;         // default building cap (see BUILD for per-building caps)
+
+// Buildings, data-driven so new ones can be added without touching the UI.
+// Levels are stored on the province under the same key (p.fort, p.bunk, ...).
+// cost/time take the current level (0 = building the first level).
+const BUILD = {
+  fort:  { n: 'Fortifications', s: 'Fort', verb: 'Fortify', max: 5, desc: '+20% defence for all defenders, slower capture',
+           cost: l => ({ c: 60 * (l + 1), st: 25 * (l + 1), f: 0 }), time: l => 20 + 12 * l },
+  bunk:  { n: 'Bunkers', s: 'Bunk', verb: 'Dig bunkers', max: 3, desc: 'Garrison takes less damage, +2 garrison, faster refill',
+           cost: l => ({ c: 70 * (l + 1), st: 40 * (l + 1), f: 0 }), time: l => 25 + 15 * l },
+  aa:    { n: 'Anti-air', s: 'AA', verb: 'Anti-air', max: 3, desc: 'Shoots down attacking air wings, blunts air strikes',
+           cost: l => ({ c: 60 * (l + 1), st: 30 * (l + 1), f: 10 * (l + 1) }), time: l => 20 + 10 * l },
+  infra: { n: 'Infrastructure', s: 'Infra', verb: 'Develop', max: 3, desc: '+25% output',
+           cost: l => ({ c: 90 * (l + 1), st: 15 * (l + 1), f: 0 }), time: l => 30 + 15 * l },
+};
+const BK = Object.keys(BUILD);
+const ENTRENCH_T = 60;     // seconds standing still on friendly soil to dig in fully
+const ENTRENCH_MAX = 0.3;  // defence bonus when fully dug in
+const FLAK = 0.5;          // hp of damage per anti-air level per second against enemy air
 
 // [population (millions), steel, fuel, terrain defence]
 const STATE = {
@@ -95,8 +113,14 @@ const unitPow = u => UT.reduce((s, t) => s + u[t] * UNITS[t].atk * UNITS[t].hp, 
 const unitCount = u => UT.reduce((s, t) => s + u[t], 0);
 const cloneU = u => ({ inf: u.inf, art: u.art, arm: u.arm, air: u.air });
 const emptyU = () => ({ inf: 0, art: 0, arm: 0, air: 0 });
-const maxGar = p => PS[p.id].gar + 2 * p.fort + (G.nations[p.owner] && G.nations[p.owner].capital === p.id ? 3 : 0);
-const defBonus = p => PS[p.id].def + 0.25 * p.fort;
+const maxGar = p => PS[p.id].gar * (p.orig === p.owner ? 1.6 : 1) + 1.5 * p.fort + 2 * (p.bunk || 0) + (G.nations[p.owner] && G.nations[p.owner].capital === p.id ? 3 : 0);
+const isCapital = p => !!G.nations[p.owner] && G.nations[p.owner].capital === p.id;
+// home soil (a nation's original provinces) is defended harder, the capital hardest
+const homeBonus = p => (p.orig === p.owner ? 0.25 : 0) + (isCapital(p) ? 0.25 : 0);
+const defBonus = p => PS[p.id].def + 0.2 * p.fort + homeBonus(p);
+const captureTime = p => CAPTURE_T * (1 + 0.25 * p.fort + 0.25 * (p.bunk || 0) + (p.orig === p.owner ? 0.5 : 0) + (isCapital(p) ? 0.5 : 0));
+// armies standing still on their own or allied soil dig in over time
+const entrench = (a, p) => (a.since == null || a.mv) ? 0 : ENTRENCH_MAX * clamp((G.t - a.since) / ENTRENCH_T, 0, 1);
 const armySpeed = a => {
   let s = 999;
   for (const t of UT) if (a.u[t] > 0.3) s = Math.min(s, UNITS[t].spd);
@@ -257,12 +281,22 @@ function econTick(dt) {
 const canPay = (n, c) => n.cash >= c.c && n.steel >= c.st && n.fuel >= c.f;
 const pay = (n, c) => { n.cash -= c.c; n.steel -= c.st; n.fuel -= c.f; };
 const unitCost = t => ({ c: UNITS[t].c, st: UNITS[t].st, f: UNITS[t].f });
-const buildCost = (kind, lvl) => kind === 'fort'
-  ? { c: 60 * (lvl + 1), st: 25 * (lvl + 1), f: 0 }
-  : { c: 90 * (lvl + 1), st: 15 * (lvl + 1), f: 0 };
+const buildCost = (kind, lvl) => BUILD[kind].cost(lvl);
+const buildTime = (kind, lvl) => BUILD[kind].time(lvl);
+// level a building will reach once everything already queued is finished
+const plannedLvl = (p, kind) => (p[kind] || 0) + (p.bq || []).filter(b => b.k === kind).length;
 
 function prodTick(dt) {
   for (const p of G.provs) {
+    if (p.bq && p.bq.length && !p.cap && !p.battle) {
+      const b = p.bq[0];
+      b.left -= dt;
+      if (b.left <= 0) {
+        p.bq.shift();
+        p[b.k] = Math.min(BUILD[b.k].max, (p[b.k] || 0) + 1);
+        if (G.nations[p.owner].player) log(`${BUILD[b.k].n} level ${p[b.k]} completed in ${PS[p.id].name}`, 'build', { pid: p.id, nats: [p.owner] });
+      }
+    }
     if (!p.q.length) continue;
     if (p.cap || p.battle) continue;       // no training under siege
     const it = p.q[0];
@@ -276,7 +310,7 @@ function prodTick(dt) {
   }
 }
 function newArmy(owner, at) {
-  const a = { id: G.nextArmy++, owner, u: emptyU(), at, mv: null, route: [] };
+  const a = { id: G.nextArmy++, owner, u: emptyU(), at, mv: null, route: [], since: G.t };
   G.armies.push(a);
   return a;
 }
@@ -355,7 +389,7 @@ function moveTick(dt) {
     if (!a.mv) continue;
     a.mv.t += dt;
     if (a.mv.t >= a.mv.dur) {
-      a.at = a.mv.to; a.mv = null;
+      a.at = a.mv.to; a.mv = null; a.since = G.t;
       if (hostileHere(a.owner, a.at)) a.route = [];         // engaged: stop and fight
       else if (a.route.length) startNext(a);
     }
@@ -401,11 +435,21 @@ function roundForces(forces, dt, noise) {
         for (const dt2 of UT) {
           if (e.u[dt2] <= 0) continue;
           const tsh = e.u[dt2] * TW[dt2] / sizes[j];
-          const bonus = (e.db || 0) * (at === 'art' ? 0.5 : 1);
+          // artillery halves every defensive bonus; anti-air only matters against air
+          const bonus = ((e.db || 0) + (e.hard || 0) + (at === 'air' ? 0.4 * (e.aa || 0) : 0)) * (at === 'art' ? 0.5 : 1);
           dmg[j][dt2] += base * share * tsh * MULT[at][dt2] / (1 + bonus);
         }
       }
     }
+  }
+  // anti-air batteries fire at hostile air wings in the province
+  for (let i = 0; i < forces.length; i++) {
+    const f = forces[i];
+    if (!f.flak || sizes[i] <= 0.01) continue;
+    let air = 0;
+    for (let j = 0; j < forces.length; j++) if (j !== i && atWar(f.nat, forces[j].nat)) air += forces[j].u.air;
+    if (air <= 0) continue;
+    for (let j = 0; j < forces.length; j++) if (j !== i && forces[j].u.air > 0 && atWar(f.nat, forces[j].nat)) dmg[j].air += f.flak * FLAK * dt * forces[j].u.air / air;
   }
   for (let i = 0; i < forces.length; i++) for (const t of UT) {
     forces[i].u[t] = Math.max(0, forces[i].u[t] - dmg[i][t] / UNITS[t].hp);
@@ -415,12 +459,12 @@ function roundForces(forces, dt, noise) {
 }
 function forcesIn(pid, clone) {
   const p = G.provs[pid], out = [];
-  const db = defBonus(p);
-  if (p.garrison > 0.05) out.push({ nat: p.owner, u: clone ? { inf: p.garrison, art: 0, arm: 0, air: 0 } : null, gar: true, ref: p, db });
+  const db = defBonus(p), aa = p.aa || 0;
+  if (p.garrison > 0.05) out.push({ nat: p.owner, u: clone ? { inf: p.garrison, art: 0, arm: 0, air: 0 } : null, gar: true, ref: p, db, aa, hard: 0.5 * (p.bunk || 0), flak: aa });
   for (const a of G.armies) {
     if (a.at !== pid) continue;
     const isDef = a.owner === p.owner || allied(a.owner, p.owner);
-    out.push({ nat: a.owner, u: clone ? cloneU(a.u) : a.u, ref: a, db: isDef ? db : 0 });
+    out.push({ nat: a.owner, u: clone ? cloneU(a.u) : a.u, ref: a, db: isDef ? db + entrench(a, p) : 0, aa: isDef ? aa : 0 });
   }
   return out;
 }
@@ -470,7 +514,7 @@ function processBattles() {
       p.lastBattle = G.t;
     } else if (p.garrison < maxGar(p)) {
       const enemyPresent = here.some(a => atWar(a.owner, p.owner));
-      if (!enemyPresent) p.garrison = Math.min(maxGar(p), p.garrison + 0.05 + 0.015 * p.fort);
+      if (!enemyPresent) p.garrison = Math.min(maxGar(p), p.garrison + 0.05 + 0.015 * p.fort + 0.02 * (p.bunk || 0));
     }
     // occupation
     const present = G.armies.filter(a => a.at === p.id);
@@ -480,7 +524,8 @@ function processBattles() {
       let best = occ[0];
       for (const a of occ) if (unitPow(a.u) > unitPow(best.u)) best = a;
       const by = best.owner;
-      if (p.cap && p.cap.by === by) p.cap.p += 1 / CAPTURE_T; else p.cap = { by, p: 1 / CAPTURE_T };
+      const ct = captureTime(p);
+      if (p.cap && p.cap.by === by) p.cap.p += 1 / ct; else p.cap = { by, p: 1 / ct };
       if (p.cap.p >= 1) capture(p, by);
     } else if (p.cap) {
       p.cap.p -= 0.12;
@@ -493,10 +538,10 @@ function capture(p, by) {
   const old = p.owner, O = G.nations[old], B = G.nations[by];
   const wasCap = O.capital === p.id;
   p.owner = by; p.garrison = 0.5; p.cap = null;
-  p.fort = Math.max(0, p.fort - 1); p.infra = Math.max(0, p.infra - 1);
-  p.unrest = p.orig === by ? 0.15 : 0.65; p.q = []; p.battle = false;
+  for (const k of BK) p[k] = Math.max(0, (p[k] || 0) - 1);     // every building is damaged in the fighting
+  p.unrest = p.orig === by ? 0.15 : 0.65; p.q = []; p.bq = []; p.battle = false;
   const d = PS[p.id];
-  B.cash += 40 + d.pop * 6; B.steel += d.steel * 40; B.fuel += d.fuel * 40;
+  B.cash += 20 + d.pop * 3; B.steel += d.steel * 20; B.fuel += d.fuel * 20;
   const k = key(old, by);
   const ws = G.wstat[k] || (G.wstat[k] = { caps: {}, last: G.t });
   ws.caps[by] = (ws.caps[by] || 0) + 1; ws.last = G.t;
@@ -543,7 +588,7 @@ function unrestTick() {
 function revolt(p) {
   const old = G.nations[p.owner], d = PS[p.id];
   const origin = G.nations[p.orig];
-  p.unrest = 0.3; p.q = [];
+  p.unrest = 0.3; p.q = []; p.bq = [];
   if (origin && origin.alive && origin.id !== p.owner) {
     p.owner = origin.id; p.garrison = 2;
     log(`${d.name} rises up against ${old.short} and returns to ${origin.short}`, 'revolt', { pid: p.id, nats: [old.id, origin.id] });
@@ -566,7 +611,7 @@ function revolt(p) {
 // ---------------------------------------------------------------- diplomacy
 function warStat(a, b) {
   const k = key(a, b), ws = G.wstat[k] || { caps: {}, last: 0 };
-  return { dur: G.wars[k] !== undefined ? G.t - G.wars[k] : 0, a: ws.caps[a] || 0, b: ws.caps[b] || 0, last: ws.last || G.wars[k] || 0 };
+  return { dur: G.wars[k] !== undefined ? G.t - G.wars[k] : 0, a: ws.caps[a] || 0, b: ws.caps[b] || 0, last: ws.last || G.wars[k] || 0, by: ws.by };
 }
 function declareWar(a, b, why) {
   if (a === b || !G.nations[a].alive || !G.nations[b].alive) return { ok: false, msg: 'Invalid target' };
@@ -588,7 +633,7 @@ function declareWar(a, b, why) {
   }
   removeTreaties(a, b, ['access', 'trade', 'nap']);
   G.wars[key(a, b)] = G.t;
-  G.wstat[key(a, b)] = { caps: {}, last: G.t };
+  G.wstat[key(a, b)] = { caps: {}, last: G.t, by: a };
   remember(b, a, 'Declared war on us', -35, 500, 80);
   log(`${A.short} declared war on ${B.short}${broke ? ' (breaking a treaty)' : ''}`, 'war', { nats: [a, b] });
   // allies pile in
@@ -599,6 +644,8 @@ function declareWar(a, b, why) {
     if (!defenderAlly && !attackerAlly) continue;
     const target = defenderAlly ? a : b, friend = defenderAlly ? b : a;
     if (atWar(x.id, target) || truceLeft(x.id, target) > 0) continue;
+    // alliances are defensive: allies only follow an attack on a runaway power
+    if (attackerAlly && !(D.share[target] > 0.27)) continue;
     if (x.player) {
       propose(friend, x.id, 'joinwar', `${G.nations[friend].short} asks you to join the war against ${G.nations[target].short}.`, { target }, 60);
     } else {
@@ -785,6 +832,10 @@ function aiEconomy(n) {
     if (ec.arm > 0.33) { want.air += 0.1; want.art += 0.05; want.arm -= 0.08; want.inf -= 0.07; }
     if (ec.inf > 0.55) { want.arm += 0.1; want.art += 0.05; want.inf -= 0.15; }
     if (ec.air > 0.18) { want.inf += 0.1; want.arm -= 0.05; want.air -= 0.05; }
+    // dug-in enemies need guns: artillery halves fort, bunker and anti-air bonuses
+    let fz = 0, nf = 0;
+    for (const e of wars) for (const pid of D.owned[e]) if (PS[pid].nbrs.some(q => G.provs[q].owner === nid)) { const q = G.provs[pid]; fz += q.fort + (q.bunk || 0); nf++; }
+    if (nf && fz / nf >= 1.5) { want.art += 0.1; want.inf -= 0.05; want.arm -= 0.05; }
   }
   const have = emptyU(); let tot = 0;
   for (const a of D.armiesBy[nid]) for (const t of UT) { have[t] += a.u[t]; tot += a.u[t]; }
@@ -810,17 +861,28 @@ function aiEconomy(n) {
     cmdRecruit(nid, bestP, pick);
     have[pick] += 1; tot += 1; made++;
   }
-  // fortifications and infrastructure
-  if (n.cash > 260 * P.econ + reserve && Math.random() < 0.6) {
-    const threatened = owned.slice().sort((a, b) => threatScore(nid, b) - threatScore(nid, a));
-    let did = false;
-    if (wars.length || Math.random() < 0.3) {
-      for (const pid of threatened.slice(0, 3)) if (G.provs[pid].fort < MAX_LVL) { if (cmdBuild(nid, pid, 'fort').ok) { did = true; break; } }
+  // construction: defences where we expect to be hit, industry where it is safe
+  if (n.cash > 200 * P.econ + reserve && Math.random() < 0.6) {
+    const rivals = wars.length ? wars : alive().filter(o => o.id !== nid && !allied(nid, o.id) && borders(nid, o.id)).map(o => o.id);
+    const airThreat = rivals.length ? enemyComp(rivals).air : 0;
+    let best = null;
+    const consider = (pid, k, sc) => {
+      const p = G.provs[pid], lvl = plannedLvl(p, k);
+      if (lvl >= BUILD[k].max || (p.bq && p.bq.length) || p.cap) return;
+      if (n.cash - buildCost(k, lvl).c < reserve * 0.5) return;
+      if (!best || sc > best.sc) best = { pid, k, sc };
+    };
+    for (const pid of owned) {
+      const p = G.provs[pid], thr = threatScore(nid, pid), capB = n.capital === pid ? 1.5 : 1;
+      if (thr > 0.5) {
+        consider(pid, 'fort', thr * capB * P.caution * (1 - plannedLvl(p, 'fort') / 6));
+        if (p.fort >= 1) consider(pid, 'bunk', thr * 0.8 * capB * P.caution * (1 - plannedLvl(p, 'bunk') / 4));
+        if (airThreat > 0.1) consider(pid, 'aa', thr * airThreat * 5 * (1 - plannedLvl(p, 'aa') / 4));
+      }
+      const val = PS[pid].cash + 2 * (PS[pid].steel + PS[pid].fuel);
+      consider(pid, 'infra', val * 0.9 * P.econ * (wars.length ? 0.4 : 1) * (1 - plannedLvl(p, 'infra') / 4) / (1 + thr * 0.3));
     }
-    if (!did) {
-      const rich = owned.filter(pid => G.provs[pid].infra < MAX_LVL).sort((a, b) => PS[b].cash + PS[b].steel + PS[b].fuel - PS[a].cash - PS[a].steel - PS[a].fuel);
-      for (const pid of rich.slice(0, 2)) if (cmdBuild(nid, pid, 'infra').ok) break;
-    }
+    if (best) cmdBuild(nid, best.pid, best.k);
   }
 }
 
@@ -844,11 +906,12 @@ function provValue(pid, nid) {
 }
 const available = (a) => a.at != null && !a.mv;
 
-function aiMilitary(n) {
+// defOnly: the caretaker that guards an absent player's nation (fight or fall back, cover threatened states, nothing else)
+function aiMilitary(n, defOnly) {
   const nid = n.id, P = pers(n);
   const diffAggr = G.opts.diff === 'hard' ? 1.15 : G.opts.diff === 'easy' ? 0.8 : 1;
   const aggr = P.aggr * diffAggr;
-  mergeIdle(nid);
+  if (!defOnly) mergeIdle(nid);
   refresh();
   let stacks = G.armies.filter(a => a.owner === nid && available(a));
   const wars = enemiesOf(nid);
@@ -912,6 +975,7 @@ function aiMilitary(n) {
     }
   }
   stacks = stacks.filter(s => !used.has(s));
+  if (defOnly) return;
 
   // 3. offence
   if (wars.length && stacks.length) {
@@ -1014,10 +1078,16 @@ function aiWar(n) {
     }
     const ratio = my / Math.max(1, th);
     const hegemon = D.share[c.id] > 0.27 && D.share[nid] < D.share[c.id];
+    // no vultures: a nation already at war is left alone unless it is a runaway power
+    // (opportunists may still join a one-front war if they are clearly stronger)
+    const busy = enemiesOf(c.id).length;
+    if (!hegemon && busy >= 2) continue;
+    if (!hegemon && busy === 1 && n.pers !== 'opportunist') continue;
     let need = 1.25 / aggr;
     need *= clamp(1 - (G.t - n.ai.lastWar - 180) / 2400, 0.78, 1);     // restlessness after long peace
     if (hegemon) need *= 0.75;
     if (hasTreaty(nid, c.id, 'nap') || hasTreaty(nid, c.id, 'trade')) need *= 1.35;
+    if (busy === 1 && !hegemon) need *= 1.3;
     if (ratio < need) continue;
     let prize = 0;
     for (const pid of D.owned[c.id]) if (PS[pid].nbrs.some(q => G.provs[q].owner === nid)) prize += provValue(pid, nid);
@@ -1036,8 +1106,10 @@ function aiDiplomacy(n) {
     if (E.player) { if (cd(n, 'cf' + e, 90)) propose(nid, e, 'ceasefire', 'proposes a ceasefire.', {}, 50); }
     else if (evalProposal('ceasefire', e, nid).ok) makePeace(nid, e);
   }
-  // allies join our wars
+  // allies join our wars: when we were attacked, or against a runaway power
   for (const e of enemiesOf(nid)) for (const x of alliesOf(nid)) {
+    if (warStat(nid, e).by === nid && !(D.share[e] > 0.27)) continue;
+    if (enemiesOf(e).length >= 3) continue;
     const X = G.nations[x];
     if (atWar(x, e) || truceLeft(x, e) > 0 || allied(x, e)) continue;
     if (X.player) { if (cd(n, 'jw' + e + x, 120)) propose(nid, x, 'joinwar', `asks you to join the war against ${G.nations[e].short}.`, { target: e }, 60); }
@@ -1080,6 +1152,19 @@ function aiDiplomacy(n) {
     propose(nid, me, 'tribute', `demands ${amt} cash as tribute.`, { amount: amt }, 60);
   }
 }
+// Runs an absent player's nation: keeps recruiting and building defences, defends, and takes peace
+// when the war is going badly. Accepts offered trade and non-aggression pacts. Never declares war, attacks,
+// or signs anything else (alliances, passage, tribute, joining wars).
+function caretaker(n) {
+  if (!n.alive) return;
+  aiEconomy(n);
+  aiMilitary(n, true);
+  for (const pr of G.proposals.slice()) {
+    if (pr.to !== n.id) continue;
+    if (pr.kind === 'ceasefire' && (shouldSeekPeace(n.id, pr.from) || evalProposal('ceasefire', n.id, pr.from).ok)) answerProposal(pr.id, true);
+    else if (pr.kind === 'trade' || pr.kind === 'nap') answerProposal(pr.id, true);     // harmless goodwill
+  }
+}
 function aiThink(n) {
   if (!n.alive) return;
   aiEconomy(n);
@@ -1101,15 +1186,20 @@ function cmdRecruit(nat, pid, type) {
   return { ok: true, msg: `${UNITS[type].n} queued` };
 }
 function cmdBuild(nat, pid, kind) {
-  const n = G.nations[nat], p = G.provs[pid];
+  const n = G.nations[nat], p = G.provs[pid], B = BUILD[kind];
+  if (!B) return { ok: false, msg: 'Unknown building' };
   if (p.owner !== nat) return { ok: false, msg: 'Not your province' };
-  const lvl = kind === 'fort' ? p.fort : p.infra;
-  if (lvl >= MAX_LVL) return { ok: false, msg: 'Already at maximum level' };
+  if (p.cap) return { ok: false, msg: 'Province is under occupation' };
+  p.bq = p.bq || [];
+  if (p.bq.length >= 3) return { ok: false, msg: 'Construction queue is full' };
+  const lvl = plannedLvl(p, kind);
+  if (lvl >= B.max) return { ok: false, msg: 'Already at maximum level' };
   const c = buildCost(kind, lvl);
   if (!canPay(n, c)) return { ok: false, msg: 'Not enough resources' };
   pay(n, c);
-  if (kind === 'fort') p.fort++; else p.infra++;
-  return { ok: true, msg: kind === 'fort' ? 'Fortifications raised' : 'Infrastructure improved' };
+  const tm = buildTime(kind, lvl);
+  p.bq.push({ k: kind, left: tm, total: tm });
+  return { ok: true, msg: `${B.n} level ${lvl + 1} under construction` };
 }
 function cmdMove(aid, dest) {
   const a = G.armies.find(x => x.id === aid);
@@ -1166,7 +1256,10 @@ function secondTick() {
   computeRates();
   for (const n of G.nations) {
     if (!n.alive) continue;
-    if (n.player && !G.opts.autoplay) continue;
+    if (n.player && !G.opts.autoplay) {
+      if (G.caretaker && G.t >= n.ai.next) { caretaker(n); n.ai.next = G.t + 2.2 + rnd(0, 1.2); }
+      continue;
+    }
     if (G.t >= n.ai.next) { aiThink(n); n.ai.next = G.t + 2.2 + rnd(0, 1.2); }
   }
   // milestones
@@ -1184,15 +1277,16 @@ function step(dt) {
 
 // ---------------------------------------------------------------- setup / save
 function newGame(opts) {
-  opts = Object.assign({ player: 0, diff: 'normal' }, opts || {});
-  G = { v: 1, t: 0, acc1: 0, opts, nations: [], provs: [], armies: [], nextArmy: 1, wars: {}, treaties: [], nextTid: 1,
-        memory: [], proposals: [], nextProp: 1, log: [], seq: 0, flags: {}, grace: 90, wstat: {} };
+  // pace: game seconds per real second at 1x speed (UI only); away: the world keeps running while the tab is closed
+  opts = Object.assign({ player: 0, diff: 'normal', pace: 1, away: false }, opts || {});
+  G = { v: 2, t: 0, acc1: 0, opts, nations: [], provs: [], armies: [], nextArmy: 1, wars: {}, treaties: [], nextTid: 1,
+        memory: [], proposals: [], nextProp: 1, log: [], seq: 0, flags: {}, grace: 240, wstat: {} };
   NATIONS.forEach((def, i) => G.nations.push({
     id: i, name: def.name, short: def.short, color: def.color, pers: def.pers, player: i === opts.player, alive: true,
     capital: byAbbr[def.cap], cash: 400, steel: 120, fuel: 90, infamy: 0, rate: { c: 0, s: 0, f: 0, up: 0, net: 0 },
     ai: { next: rnd(0.5, 4), focus: null, tprop: {}, lastWar: 0 }, orig: i,
   }));
-  MAPD.provinces.forEach((p, i) => G.provs.push({ id: i, owner: -1, orig: -1, garrison: 0, fort: 0, infra: 0, unrest: 0, cap: null, q: [], battle: false }));
+  MAPD.provinces.forEach((p, i) => G.provs.push({ id: i, owner: -1, orig: -1, garrison: 0, fort: 0, bunk: 0, aa: 0, infra: 0, unrest: 0, cap: null, q: [], bq: [], battle: false }));
   NATIONS.forEach((def, i) => def.states.forEach(ab => { const p = G.provs[byAbbr[ab]]; p.owner = i; p.orig = i; }));
   G.provs.forEach(p => { p.garrison = maxGar(p); });
   refresh();
@@ -1210,16 +1304,29 @@ function newGame(opts) {
   return G;
 }
 function serialize() { return JSON.stringify(G); }
-function load(str) { G = JSON.parse(str); refresh(); computeRates(); return G; }
+function load(str) {
+  G = JSON.parse(str);
+  // saves from before buildings had construction time, bunkers or anti-air
+  for (const p of G.provs) { for (const k of BK) p[k] = p[k] || 0; p.bq = p.bq || []; }
+  for (const a of G.armies) if (a.since === undefined) a.since = a.mv ? null : G.t;
+  if (!G.opts.pace) G.opts.pace = 1;
+  G.v = 2;
+  refresh(); computeRates(); return G;
+}
+// run the world forward by `secs` of game time (offline progress, tests)
+function advance(secs) {
+  let left = secs;
+  while (left > 1e-9) { const d = Math.min(0.25, left); step(d); left -= d; }
+}
 
 return {
-  UT, UNITS, PERS, NATIONS, PS, MAXLVL: MAX_LVL, CAPTURE_T,
+  UT, UNITS, PERS, NATIONS, PS, MAXLVL: MAX_LVL, CAPTURE_T, BUILD, BK, captureTime, entrench, plannedLvl, buildTime, advance,
   get G() { return G; }, get D() { return D; },
   newGame, step, serialize, load, refresh, computeRates,
   atWar, allied, hasTreaty, hasAccess, truceLeft, opinion, canEnter, borders,
   unitPow, unitCount, armySpeed, routeTime, findRoute, predictAttack, defBonus, maxGar,
   buildCost, unitCost, canPay, provRates,
   cmdRecruit, cmdBuild, cmdMove, cmdStop, cmdSplit, cmdMerge, cmdDisband,
-  diplo, answerProposal, evalProposal, warStat, enemiesOf, alliesOf, pers,
+  diplo, answerProposal, caretaker, evalProposal, warStat, enemiesOf, alliesOf, pers,
 };
 })();
