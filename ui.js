@@ -164,9 +164,14 @@ stage.addEventListener('pointerdown', e => {
   if (e.target.closest('.mapctl')) return;
   pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
   try { stage.setPointerCapture(e.pointerId); } catch (_) {}
-  if (pts.size === 1) gesture = { moved: false, t: performance.now(), target: e.target, x: e.clientX, y: e.clientY };
+  if (pts.size === 1) {
+    gesture = { moved: false, t: performance.now(), target: e.target, x: e.clientX, y: e.clientY };
+    // pressing on one of your own armies starts a drag-to-move instead of a pan
+    const b = UI.started && e.target.closest && e.target.closest('[data-a]'), ar = b && army(+b.dataset.a);
+    if (ar && ar.owner === me() && !ar.strike) gesture.drag = ar.id;
+  }
   if (pts.size === 2) {
-    if (gesture) gesture.moved = true;
+    if (gesture) { gesture.moved = true; gesture.drag = null; UI.drag = null; }
     const [a, b] = [...pts.values()];
     pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2 };
   }
@@ -178,7 +183,8 @@ stage.addEventListener('pointermove', e => {
   p.x = e.clientX; p.y = e.clientY;
   if (pts.size === 1 && gesture) {
     if (!gesture.moved && Math.hypot(e.clientX - gesture.x, e.clientY - gesture.y) > 7) gesture.moved = true;
-    if (gesture.moved) { UI.view.cx -= dx / UI.view.scale; UI.view.cy -= dy / UI.view.scale; applyView(); }
+    if (gesture.moved && gesture.drag) dragTo(gesture.drag, e.clientX, e.clientY);
+    else if (gesture.moved) { UI.view.cx -= dx / UI.view.scale; UI.view.cy -= dy / UI.view.scale; applyView(); }
   } else if (pts.size === 2 && pinch) {
     const [a, b] = [...pts.values()];
     const d = Math.hypot(a.x - b.x, a.y - b.y), cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
@@ -192,13 +198,36 @@ function endPointer(e) {
   pts.delete(e.pointerId);
   if (pts.size === 0 && gesture) {
     const g = gesture; gesture = null; pinch = null;
-    if (!g.moved && e.type === 'pointerup' && performance.now() - g.t < 700) { handleTap(g.target); flush(); drawMap(performance.now()); }
+    if (g.drag && g.moved) {
+      const d = UI.drag; UI.drag = null;
+      if (d && d.to != null && e.type === 'pointerup') { selectArmy(d.id); orderTo(d.to); }
+      flush(); drawMap(performance.now());
+    } else if (!g.moved && e.type === 'pointerup' && performance.now() - g.t < 700) { handleTap(g.target); flush(); drawMap(performance.now()); }
   }
   if (pts.size < 2) pinch = null;
 }
 stage.addEventListener('pointerup', endPointer);
 stage.addEventListener('pointercancel', endPointer);
 stage.addEventListener('wheel', e => { e.preventDefault(); zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0016)); }, { passive: false });
+
+// the province under a screen point, and the route an army would take there
+function dragTo(id, x, y) {
+  const a = army(id);
+  if (!a) { UI.drag = null; return; }
+  const el = document.elementFromPoint(x, y), hit = el && el.closest && (el.closest('[data-p]') || el.closest('[data-a]'));
+  let to = null;
+  if (hit && hit.dataset.p != null) to = +hit.dataset.p;
+  else if (hit && hit.dataset.a != null) { const o = army(+hit.dataset.a); if (o) to = o.at != null ? o.at : o.mv.to; }
+  if (UI.drag && UI.drag.id === id && UI.drag.to === to) return;
+  const from = a.mv ? a.mv.to : a.at, dom = S.domOf(a);
+  let route = null;
+  if (to != null && to !== from) {
+    if (dom === 'msl') route = S.missileOk(a, to).ok ? [to] : null;
+    else route = S.findRoute(a.owner, from, to, S.armySpeed(a), dom);
+  }
+  UI.drag = { id, to: to === from ? null : to, route };
+  drawMap(performance.now());
+}
 
 // ------------------------------------------------------------ selection and orders
 function handleTap(t) {
@@ -237,17 +266,96 @@ function orderTo(pid) {
   UI.selP = pid; UI.confirm = ''; dirty();
 }
 
+// ------------------------------------------------------------ movement geometry
+// Troops cross between two provinces at the middle of their shared border (the longest stretch of it),
+// not along the straight line between the two city anchors.
+const CROSS = {};
+{
+  const best = {};
+  for (const b of MAP.borders) {
+    const nums = b.d.match(/-?[\d.]+/g).map(Number), pts = [];
+    for (let i = 0; i + 1 < nums.length; i += 2) pts.push([nums[i], nums[i + 1]]);
+    let len = 0;
+    for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+    const k = Math.min(b.a, b.b) + ':' + Math.max(b.a, b.b);
+    if (best[k] && best[k] >= len) continue;
+    best[k] = len;
+    // the point halfway along the border
+    let half = len / 2, mid = pts[0];
+    for (let i = 1; i < pts.length; i++) {
+      const l = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+      if (half <= l) { const t = l ? half / l : 0; mid = [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t]; break; }
+      half -= l;
+    }
+    CROSS[k] = mid;
+  }
+}
+// the points a unit passes on one leg: from anchor, border crossing (land only), to anchor
+function legPts(from, to, sea) {
+  const A = [PS[from].cx, PS[from].cy], B = [PS[to].cx, PS[to].cy];
+  const c = sea ? null : CROSS[Math.min(from, to) + ':' + Math.max(from, to)];
+  // skip a crossing that would be a big detour (odd-shaped borders)
+  if (c && Math.hypot(c[0] - A[0], c[1] - A[1]) + Math.hypot(B[0] - c[0], B[1] - c[1]) < 1.6 * Math.hypot(B[0] - A[0], B[1] - A[1]) + 4) return [A, c, B];
+  return [A, B];
+}
+// position and heading a fraction k of the way along a polyline
+function along(pts, k) {
+  let tot = 0;
+  const seg = [];
+  for (let i = 1; i < pts.length; i++) { const l = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]); seg.push(l); tot += l; }
+  let d = clamp(k, 0, 1) * tot;
+  for (let i = 0; i < seg.length; i++) {
+    if (d <= seg[i] || i === seg.length - 1) {
+      const t = seg[i] ? Math.min(1, d / seg[i]) : 0, a = pts[i], b = pts[i + 1];
+      return { x: a[0] + (b[0] - a[0]) * t, y: a[1] + (b[1] - a[1]) * t, ang: Math.atan2(b[1] - a[1], b[0] - a[0]) * 180 / Math.PI };
+    }
+    d -= seg[i];
+  }
+  return { x: pts[0][0], y: pts[0][1], ang: 0 };
+}
+// the whole polyline of a route: from a start point through each leg
+function routePts(a, start, list) {
+  const sea = S.domOf(a) === 'sea', msl = S.domOf(a) === 'msl', out = [start.pt];
+  let cur = start.pid;
+  for (const r of list) {
+    const lp = msl ? [null, [PS[r].cx, PS[r].cy]] : legPts(cur, r, sea);
+    for (let i = 1; i < lp.length; i++) out.push(lp[i]);
+    cur = r;
+  }
+  return out;
+}
+
 // ------------------------------------------------------------ map drawing (per frame)
+// NATO-style symbol for what an army mostly is (drawn left of the count)
+const SYM = {
+  inf: 'M-14 -4.5H-4V4.5H-14ZM-14 -4.5L-4 4.5M-4 -4.5L-14 4.5',
+  mech: 'M-14 -4.5H-4V4.5H-14ZM-14 -4.5L-4 4.5M-4 -4.5L-14 4.5M-12 0a3 2.4 0 1 0 6 0a3 2.4 0 1 0 -6 0',
+  arm: 'M-14 -4.5H-4V4.5H-14ZM-12 0a3 2.4 0 1 0 6 0a3 2.4 0 1 0 -6 0',
+  art: 'M-14 -4.5H-4V4.5H-14ZM-10.6 0a1.6 1.6 0 1 0 3.2 0a1.6 1.6 0 1 0 -3.2 0',
+  air: 'M-14 -4.5H-4V4.5H-14ZM-13 1.5Q-11 -2.5 -9 1.5Q-7 -2.5 -5 1.5',
+  sea: 'M-9 -3.5V3M-11.5 -1.5H-6.5M-12 0.5Q-9 5 -6 0.5',
+  msl: 'M-14 0H-5M-7.5 -2.5L-5 0L-7.5 2.5',
+};
+function symOf(a) {
+  const dom = S.domOf(a);
+  if (dom !== 'land') return dom;
+  const w = { inf: 0, veh: 0, art: 0, air: 0, mech: 0 };
+  for (const t of UT) if (a.u[t] > 0) { const c = UNITS[t].cls; const k = t === 'mech' ? 'mech' : c === 'heli' ? 'air' : c; if (w[k] !== undefined) w[k] += a.u[t] * UNITS[t].atk * UNITS[t].hp; }
+  let best = 'inf', bv = -1;
+  for (const k in w) if (w[k] > bv) { bv = w[k]; best = k; }
+  return best === 'veh' ? 'arm' : best;
+}
 function makeBadge(a) {
   const n = nat(a.owner);
   const dom = S.domOf(a);
   const g = mk('g', { class: 'bdg', 'data-a': a.id }, L.armies);
   // armies are tags, fleets are hulls, missile salvos are pills
-  if (dom === 'sea') mk('path', { class: 'hull', d: 'M-13 -6.5H13L9 6.5H-9Z', fill: n.color }, g);
-  else mk('rect', { x: -11, y: -6.5, width: 22, height: 13, rx: dom === 'msl' ? 6.5 : 2, fill: n.color }, g);
-  const t = mk('text', { y: 3.3 }, g);
+  if (dom === 'sea') mk('path', { class: 'hull', d: 'M-17 -6.5H17L13 6.5H-13Z', fill: n.color }, g);
+  else mk('rect', { x: -16, y: -6.5, width: 32, height: 13, rx: dom === 'msl' ? 6.5 : 2, fill: n.color }, g);
+  const sy = mk('path', { class: 'sym', d: '' }, g);
+  const t = mk('text', { x: 5, y: 3.3 }, g);
   const d = mk('path', { class: 'dir', d: 'M0 -4L7 0L0 4Z', display: 'none' }, g);
-  return { g, t, d, last: '' };
+  return { g, t, d, sy, sym: '', last: '' };
 }
 function drawMap(now) {
   const g = G(), bk = UI.bk;
@@ -284,20 +392,22 @@ function drawMap(now) {
     if (a.at != null) {
       const grp = groups[a.at], i = grp.indexOf(a), n = grp.length, per = 3;
       const row = Math.floor(i / per), col = i % per, inRow = Math.min(per, n - row * per);
-      x = PS[a.at].cx + (col - (inRow - 1) / 2) * 25 * bk;
+      x = PS[a.at].cx + (col - (inRow - 1) / 2) * 35 * bk;
       y = PS[a.at].cy + (9 + row * 15) * bk;
     } else {
-      const f = PS[a.mv.from], t = PS[a.mv.to], k = a.mv.dur ? a.mv.t / a.mv.dur : 0;
-      x = f.cx + (t.cx - f.cx) * k; y = f.cy + (t.cy - f.cy) * k + 9 * bk;
-      ang = Math.atan2(t.cy - f.cy, t.cx - f.cx) * 180 / Math.PI;
+      const k = a.mv.dur ? a.mv.t / a.mv.dur : 0;
+      const pos = along(S.domOf(a) === 'msl' ? [[PS[a.mv.from].cx, PS[a.mv.from].cy], [PS[a.mv.to].cx, PS[a.mv.to].cy]] : legPts(a.mv.from, a.mv.to, S.domOf(a) === 'sea'), k);
+      x = pos.x; y = pos.y + 9 * bk; ang = pos.ang;
     }
+    const sym = symOf(a);
+    if (e.sym !== sym) { e.sy.setAttribute('d', SYM[sym]); e.sym = sym; }
     e.g.setAttribute('transform', `translate(${x.toFixed(1)} ${y.toFixed(1)}) scale(${bk.toFixed(4)})`);
     const txt = String(Math.max(1, Math.round(S.unitCount(a.u))));
     if (e.last !== txt) { e.t.textContent = txt; e.last = txt; }
     const cls = 'bdg' + (a.id === UI.selA ? ' sel' : '') + (a.owner !== me() ? ' foe' : '') + (a.strike ? ' strike' : '');
     if (e.g.getAttribute('class') !== cls) e.g.setAttribute('class', cls);
     if (ang === null) e.d.setAttribute('display', 'none');
-    else { e.d.setAttribute('display', ''); e.d.setAttribute('transform', `translate(11 0) rotate(${ang.toFixed(0)}) translate(-1 0)`); }
+    else { e.d.setAttribute('display', ''); e.d.setAttribute('transform', `translate(16 0) rotate(${ang.toFixed(0)}) translate(-1 0)`); }
   }
   for (const [id, e] of badges) if (!live.has(id)) { e.g.remove(); badges.delete(id); }
 
@@ -320,19 +430,40 @@ function drawMap(now) {
   L.routes.textContent = '';
   const sa = UI.selA && army(UI.selA);
   if (sa && sa.at != null && S.domOf(sa) === 'msl') mk('circle', { cx: PS[sa.at].cx, cy: PS[sa.at].cy, r: S.MSL_RANGE, class: 'route faint', fill: 'none', 'stroke-width': (1.2 / UI.view.scale).toFixed(2), 'stroke-dasharray': `${(5 / UI.view.scale).toFixed(1)} ${(4 / UI.view.scale).toFixed(1)}` }, L.routes);
+  const dash = `${(5 / UI.view.scale).toFixed(1)} ${(4 / UI.view.scale).toFixed(1)}`;
+  const line = (pts, cls, w) => mk('path', { d: 'M' + pts.map(p => p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join('L'), class: cls, 'stroke-width': (w / UI.view.scale).toFixed(2), 'stroke-dasharray': dash }, L.routes);
   for (const a of g.armies) {
     if (a.owner !== me() || (!a.route.length && !a.mv)) continue;
     const sel = a.id === UI.selA;
     if (!sel && !a.mv) continue;
-    const pts2 = [];
+    let start;
     if (a.mv) {
-      const f = PS[a.mv.from], t = PS[a.mv.to], k = a.mv.dur ? a.mv.t / a.mv.dur : 0;
-      pts2.push([f.cx + (t.cx - f.cx) * k, f.cy + (t.cy - f.cy) * k]);
-      pts2.push([t.cx, t.cy]);
-    } else pts2.push([PS[a.at].cx, PS[a.at].cy]);
-    for (const r of a.route) pts2.push([PS[r].cx, PS[r].cy]);
-    if (pts2.length < 2) continue;
-    mk('path', { d: 'M' + pts2.map(p => p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join('L'), class: 'route' + (sel ? '' : ' faint'), 'stroke-width': ((sel ? 1.9 : 1.2) / UI.view.scale).toFixed(2), 'stroke-dasharray': `${(5 / UI.view.scale).toFixed(1)} ${(4 / UI.view.scale).toFixed(1)}` }, L.routes);
+      const k = a.mv.dur ? a.mv.t / a.mv.dur : 0, leg = S.domOf(a) === 'msl' ? [[PS[a.mv.from].cx, PS[a.mv.from].cy], [PS[a.mv.to].cx, PS[a.mv.to].cy]] : legPts(a.mv.from, a.mv.to, S.domOf(a) === 'sea');
+      const p = along(leg, k);
+      // the rest of the current leg, then the queued legs
+      const pts = [[p.x, p.y]];
+      let acc = 0; const segs = [];
+      for (let i = 1; i < leg.length; i++) { const l = Math.hypot(leg[i][0] - leg[i - 1][0], leg[i][1] - leg[i - 1][1]); segs.push(l); acc += l; }
+      let dd = k * acc;
+      for (let i = 0; i < segs.length; i++) { if (dd < segs[i]) { for (let j = i + 1; j < leg.length; j++) pts.push(leg[j]); break; } dd -= segs[i]; }
+      if (pts.length === 1) pts.push(leg[leg.length - 1]);
+      start = { pid: a.mv.to, pt: pts[pts.length - 1] };
+      const tail = routePts(a, start, a.route);
+      line(pts.concat(tail.slice(1)), 'route' + (sel ? '' : ' faint'), sel ? 1.9 : 1.2);
+    } else line(routePts(a, { pid: a.at, pt: [PS[a.at].cx, PS[a.at].cy] }, a.route), 'route' + (sel ? '' : ' faint'), sel ? 1.9 : 1.2);
+  }
+  // drag-to-move preview
+  if (UI.drag && UI.drag.to != null) {
+    const a = army(UI.drag.id);
+    if (a) {
+      const from = a.mv ? a.mv.to : a.at;
+      if (UI.drag.route) line(routePts(a, { pid: from, pt: [PS[from].cx, PS[from].cy] }, UI.drag.route), 'route drag', 2.4);
+      const d = PS[UI.drag.to];
+      mk('circle', { cx: d.cx, cy: d.cy, r: (7 / UI.view.scale).toFixed(2), class: 'route drag' + (UI.drag.route ? '' : ' bad'), fill: 'none', 'stroke-width': (2.2 / UI.view.scale).toFixed(2) }, L.routes);
+      const eta = UI.drag.route ? (a.mv ? a.mv.dur - a.mv.t : 0) + S.routeTime(a, UI.drag.route, from) : null;
+      const lab = mk('text', { x: d.cx, y: (d.cy - 11 / UI.view.scale).toFixed(2), class: 'dragEta', 'font-size': (12 / UI.view.scale).toFixed(2), 'stroke-width': (3 / UI.view.scale).toFixed(2) }, L.routes);
+      lab.textContent = eta == null ? 'No route' : PS[UI.drag.to].name + ' \u00b7 ' + fmtDur(eta);
+    }
   }
 }
 
@@ -407,7 +538,7 @@ function provCard(pid) {
         const c = S.unitCost(t), U = UNITS[t];
         if (!S.canTrain(p, t)) { h += `<button class="btn dim" disabled title="${U.d}">${U.n}<small>${S.needText(p, t)}</small></button>`; continue; }
         const ok = S.canPay(n, c);
-        h += `<button class="btn ${ok ? '' : 'dim'}" data-act="recruit" data-p="${pid}" data-t="${t}" title="${U.d}">${U.n}<small>${costStr(c)} &middot; ${fmtDur(S.trainTime(p, t))}</small></button>`;
+        h += `<button class="btn ${ok ? '' : 'dim'}" data-act="recruit" data-p="${pid}" data-t="${t}" title="${U.d}">${U.n}<small>${costStr(c)} &middot; ${fmtDur(S.trainTime(p, t))}</small><small class="ef">Atk ${U.atk} &middot; HP ${U.hp} &middot; Spd ${U.spd}. ${U.d}</small></button>`;
       }
       h += '</div>';
     }
@@ -442,16 +573,58 @@ function provCard(pid) {
   return h;
 }
 
+// what an army is made of and how it fights: per-unit numbers with research applied, totals, matchups
+const CLSN = { inf: 'infantry', veh: 'vehicles', art: 'artillery', air: 'aircraft', heli: 'helicopters', ship: 'ships', sub: 'submarines', msl: 'missiles' };
+function armyStats(a) {
+  const g = G(), m = S.modsOf(a.owner), dom = S.domOf(a);
+  const types = UT.filter(t => a.u[t] >= 0.05);
+  let fire = 0, tough = 0, n = 0;
+  let h = '<table class="utab"><tr><th>Unit</th><th>No.</th><th>Atk</th><th>HP</th><th>Spd</th></tr>';
+  for (const t of types) {
+    const U = UNITS[t], atk = U.atk * m.atk[U.cat], hp = U.hp * m.hp[U.cat];
+    fire += a.u[t] * atk; tough += a.u[t] * hp; n += a.u[t];
+    h += `<tr title="${U.d}"><td>${U.n}</td><td class="mono" data-bind="ac:${a.id}:${t}">${f1(a.u[t])}</td><td class="mono">${f1(atk)}</td><td class="mono">${Math.round(hp)}</td><td class="mono">${U.spd}</td></tr>`;
+  }
+  h += '</table>';
+  const here = a.at != null ? g.provs[a.at] : null;
+  const friendly = here && (here.owner === a.owner || S.allied(a.owner, here.owner));
+  const def = friendly && dom !== 'msl' ? S.defBonus(here) + S.entrench(a, here) : 0;
+  h += `<div class="kvs">
+    <div class="kv"><span>Firepower</span><b>${Math.round(fire)}</b></div>
+    <div class="kv"><span>Toughness</span><b>${Math.round(tough)}</b></div>
+    <div class="kv"><span>Speed</span><b>${S.armySpeed(a)}</b></div>
+    <div class="kv"><span>Defence here</span><b>${here ? (def ? '+' + Math.round(def * 100) + '%' : 'none') : '-'}</b></div>
+    ${here && friendly && dom !== 'msl' ? `<div class="kv"><span>Dug in</span><b>+${Math.round(S.entrench(a, here) * 100)}%</b></div>` : ''}
+    <div class="kv"><span>Upkeep / s</span><b>${f2(types.reduce((s, t) => s + a.u[t] * UNITS[t].upk, 0))}</b></div>
+  </div>`;
+  // matchups: which enemy classes this force hits hard or barely scratches, and which hurt it most
+  if (n > 0 && dom !== 'msl') {
+    const good = [], poor = [], fear = [];
+    for (const c in CLSN) {
+      let w = 0, sum = 0, hit = 0, tw = 0;
+      const rep = UT.find(t => UNITS[t].cls === c);
+      for (const t of types) {
+        const U = UNITS[t];
+        sum += a.u[t] * U.atk; w += a.u[t] * U.atk * S.MULT[t][rep];
+        tw += a.u[t] * S.TW[t]; hit += a.u[t] * S.TW[t] * S.CM[c][U.cls];
+      }
+      const r = sum ? w / sum : 0, f = tw ? hit / tw : 0;
+      if (c === 'msl') continue;
+      if (r >= 1.25) good.push(CLSN[c]); else if (r <= 0.35) poor.push(CLSN[c]);
+      if (f >= 1.3) fear.push(CLSN[c]);
+    }
+    if (good.length) h += `<div class="note">Strong against ${good.join(', ')}.</div>`;
+    if (poor.length) h += `<div class="note">Can barely hurt ${poor.join(', ')}.</div>`;
+    if (fear.length) h += `<div class="note down">Vulnerable to ${fear.join(', ')}.</div>`;
+  }
+  return h;
+}
 function armyCard(a) {
   const g = G(), n = nat(a.owner), here = a.at != null ? a.at : a.mv.to;
   const tot = S.unitCount(a.u) || 1;
   const dom = S.domOf(a);
   let h = `<div class="hd">${dotOf(n)}<h3>${KIND[dom]} ${a.id}</h3><small>${a.at != null ? 'at ' + pname(a.at) : 'to ' + pname(a.mv.to)}</small></div>`;
-  h += '<div class="kvs">';
-  for (const t of UT) if (a.u[t] >= 0.5) h += `<div class="kv" title="${UNITS[t].d}"><span>${UNITS[t].n}</span><b data-bind="ac:${a.id}:${t}">${Math.round(a.u[t])}</b></div>`;
-  h += `<div class="kv"><span>Speed</span><b>${S.armySpeed(a)}</b></div>`;
-  if (a.at != null && dom !== 'msl' && (g.provs[a.at].owner === a.owner || S.allied(a.owner, g.provs[a.at].owner))) h += `<div class="kv"><span>Dug in</span><b>+${Math.round(S.entrench(a, g.provs[a.at]) * 100)}%</b></div>`;
-  h += '</div>';
+  h += armyStats(a);
   if (a.mv || a.route.length) h += `<div class="note">${a.strike ? 'Missiles in flight' : dom === 'sea' ? 'Under way' : 'Marching'} &middot; ETA <b class="mono" data-bind="eta:${a.id}">${fmtDur(etaOf(a))}</b></div>`;
   else if (g.provs[here].battle) h += '<div class="note down">Engaged in battle.</div>';
   else h += `<div class="note">${HINT[dom]}</div>`;
@@ -492,7 +665,7 @@ function mapPanel() {
   if (UI.selA) { const a = army(UI.selA); if (a) return armyCard(a); UI.selA = null; }
   if (UI.selP != null) return provCard(UI.selP);
   return `<div class="hd"><h3>Orders</h3></div>
-  <p class="note">Tap an army badge, then tap a province to march. Tap any province for details, recruiting and city buildings. Pinch or scroll to zoom; city names appear as you zoom in.</p>
+  <p class="note">Drag an army badge onto a province to send it there (or tap the badge, then the province). Tap any province for details, recruiting and city buildings. Pinch or scroll to zoom; city names appear as you zoom in.</p>
   <div class="btns"><button class="btn" data-act="homefocus">Go to my capital</button></div>`;
 }
 
@@ -618,7 +791,8 @@ function intelPanel() {
   h += `<div class="opts">World runs while away: ${awaySeg(g.opts.away, 'away')}</div>`;
   h += '<div class="btns"><button class="btn" data-act="save">Save game</button><button class="btn warn" data-act="newgame">New game</button></div>';
   h += `<details><summary>How to play</summary>
-  <p>Tap an army badge, then tap a province to march there. Armies need passage rights to cross land you are at peace with.</p>
+  <p>Drag an army badge onto a province to send it there, or tap the badge and then the province. The dashed line shows the route, and red means there is no way through. Armies cross at the border between provinces. One that runs into a fight on the way stops to fight, then carries on once it wins. Armies need passage rights to cross land you are at peace with.</p>
+  <p>A badge's symbol shows what an army mostly is: a crossed box for infantry, an oval for armor, a dot for artillery, wings for aircraft. Its card lists every unit with attack, HP and speed (research included), plus what it is strong against and what it should avoid.</p>
   <p>Declare war from the Diplomacy tab. A province falls when its garrison is beaten and you hold it long enough. Fortifications, bunkers and home soil all make that take longer.</p>
   <p>Each province is a city region that produces cash, manpower and one resource. Build in its city: an army base to train artillery and armor, an air base for air wings, defences to hold it, and industry to grow. Construction takes time, so build before the enemy comes.</p>
   <p>Fortifications help every defender, bunkers harden the garrison, anti-air shoots down air wings, hospitals cut your losses, and armies that stay put on friendly soil dig in. Artillery halves all of these bonuses.</p>
@@ -693,7 +867,7 @@ function updateBinds() {
     else if (k[0] === 'un') v = Math.round(g.provs[+k[1]].unrest * 100) + '%';
     else if (k[0] === 'q') { const it = g.provs[+k[1]].q[+k[2]]; v = it ? fmtDur(it.left) : ''; }
     else if (k[0] === 'bq') { const b = (g.provs[+k[1]].bq || [])[+k[2]]; v = b ? fmtDur(b.left) : ''; }
-    else if (k[0] === 'ac') { const a = army(+k[1]); v = a ? Math.round(a.u[k[2]]) : ''; }
+    else if (k[0] === 'ac') { const a = army(+k[1]); v = a ? f1(a.u[k[2]]) : ''; }
     else if (k[0] === 'eta') { const a = army(+k[1]); v = a ? fmtDur(etaOf(a)) : ''; }
     else if (k[0] === 'rp') v = Math.floor(nat(me()).rp);
     else if (k[0] === 'rse') v = fmtDur(researchEta(nat(me())));
@@ -773,7 +947,7 @@ function afterStart() {
   closeModal();
   if (UI.W) { if (m >= 0) focusNation(m); else fitView(); }
   renderHeader(); renderPanel(); drawMap(performance.now());
-  if (m >= 0) toast('Your armies are the numbered badges. Tap one, then tap a province.', 'ok');
+  if (m >= 0) toast('Your armies are the numbered badges. Drag one onto a province to send it there.', 'ok');
 }
 function saveNow(quiet) {
   try { stamp(); localStorage.setItem(SAVE_KEY, S.serialize()); if (!quiet) toast('Game saved', 'ok'); }

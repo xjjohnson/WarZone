@@ -592,6 +592,7 @@ function missileOk(a, dest) {
 }
 function orderMove(a, dest) {
   const sp = armySpeed(a), dom = domOf(a);
+  a.held = null;
   if (dom === 'msl') {
     if (a.at === dest) return { ok: true, msg: 'Holding position' };
     const m = missileOk(a, dest);
@@ -639,13 +640,24 @@ function hostileHere(nat, pid) {
   for (const x of G.armies) if (x.at === pid && x.owner !== nat && atWar(nat, x.owner)) return true;
   return false;
 }
+// armies that stopped to fight on the way pick their march back up once nothing hostile is left here
+function resumeMarches() {
+  for (const a of G.armies) {
+    if (!a.held || a.mv || a.at == null) continue;
+    if (a.route.length) { a.held = null; continue; }
+    if (hostileHere(a.owner, a.at)) continue;
+    const rest = a.held; a.held = null;
+    if (rest.every(pid => canEnter(a.owner, pid))) { a.route = rest; startNext(a); }
+  }
+}
 function moveTick(dt) {
   for (const a of G.armies) {
     if (!a.mv) continue;
     a.mv.t += dt;
     if (a.mv.t >= a.mv.dur) {
       a.at = a.mv.to; a.mv = null; a.since = G.t;
-      if (hostileHere(a.owner, a.at)) a.route = [];         // engaged: stop and fight
+      // engaged: stop and fight, then carry on to the destination once the way is clear
+      if (hostileHere(a.owner, a.at)) { if (a.route.length) a.held = a.route; a.route = []; }
       else if (a.route.length) startNext(a);
     }
   }
@@ -1745,7 +1757,7 @@ function cmdMove(aid, dest) {
 }
 function cmdStop(aid) {
   const a = G.armies.find(x => x.id === aid);
-  if (a) a.route = [];
+  if (a) { a.route = []; a.held = null; }
 }
 function cmdSplit(aid, mode) {
   const a = G.armies.find(x => x.id === aid);
@@ -1780,6 +1792,7 @@ function secondTick() {
   G.armies = G.armies.filter(a => unitCount(a.u) >= 0.3);
   refresh();
   processBattles();
+  resumeMarches();
   unrestTick();
   // treaties expire
   for (const t of G.treaties.slice()) if (t.exp && t.exp <= G.t) {
@@ -1877,6 +1890,7 @@ function advance(secs) {
 }
 
 return {
+  MULT, CM, TW, K_DMG,
   TECH, TK, BRANCHES, techCost, pourRate, techOpen, cmdResearch, cmdCancelResearch, modsOf, mslRange, hasTech,
   UT, UNITS, CATS, PERS, MSL_RANGE, domOf, needText, missileOk, isAirT, inRange, NATIONS, PS, MAXLVL: MAX_LVL, CAPTURE_T, RES, RESN, BLD, BK, byState, captureTime, entrench, plannedLvl, maxLvl, advance,
   get G() { return G; }, get D() { return D; },

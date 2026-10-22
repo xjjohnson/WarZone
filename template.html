@@ -76,6 +76,15 @@ b, strong { font-weight: 600; }
 .bdg.sel rect { stroke: var(--sel); stroke-width: 2.4; }
 .bdg.foe rect { stroke-dasharray: 0; }
 .bdg .hull { stroke: var(--badge-ink); stroke-width: 1; }
+.utab { width: 100%; border-collapse: collapse; margin: 6px 0 4px; font-size: 13px; }
+.utab th { text-align: left; font: 600 10px var(--body); letter-spacing: .1em; text-transform: uppercase; color: var(--ink2); padding: 2px 4px 4px 0; }
+.utab td { padding: 3px 4px 3px 0; border-top: 1px solid var(--line); }
+.utab th:not(:first-child), .utab td:not(:first-child) { text-align: right; width: 3.6em; }
+.bdg .sym { fill: none; stroke: var(--badge-ink); stroke-width: 1.1; stroke-linejoin: round; stroke-linecap: round; pointer-events: none; }
+.route { stroke-linejoin: round; stroke-linecap: round; }
+.route.drag { stroke: var(--hot); opacity: 1; }
+.route.drag.bad { stroke: var(--warn); }
+.dragEta { font-family: var(--mono); font-weight: 700; fill: var(--ink); stroke: var(--paper); paint-order: stroke; text-anchor: middle; pointer-events: none; }
 .bdg.sel .hull { stroke: var(--sel); stroke-width: 2.4; }
 .bdg.strike rect { stroke-dasharray: 2 1.5; }
 .fxr { fill: none; stroke-width: 2; pointer-events: none; }
