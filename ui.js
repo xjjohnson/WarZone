@@ -672,9 +672,24 @@ function mapPanel() {
   const g = G();
   if (UI.selA) { const a = army(UI.selA); if (a) return armyCard(a); UI.selA = null; }
   if (UI.selP != null) return provCard(UI.selP);
-  return `<div class="hd"><h3>Orders</h3></div>
+  return missionsHtml() + `<div class="hd"><h3>Orders</h3></div>
   <p class="note">Troops march along the roads. Drag an army onto any waypoint or city to send it there (or tap the army, then the spot). Tap any province for details, recruiting and city buildings. Pinch or scroll to zoom; city names appear as you zoom in.</p>
   <div class="btns"><button class="btn" data-act="homefocus">Go to my capital</button></div>`;
+}
+
+// the player's missions: goal, progress and reward
+function missionsHtml() {
+  const g = G(), ms = g.missions;
+  if (me() < 0 || !ms) return '';
+  let h = `<div class="hd"><h3>Missions</h3><small>${ms.done} done</small></div>`;
+  if (!ms.list.length) return h + '<p class="note">New missions are on their way.</p>';
+  for (const m of ms.list) {
+    const { have, need } = S.mInfo(m), pct = Math.round(100 * have / need);
+    const cnt = need > 1 ? ` <span class="mono">${Math.floor(have)}/${need}</span>` : '';
+    h += `<div class="row mis"><div class="grow"><div class="nm">${m.t}${cnt}</div><div class="sub">${m.d}</div><div class="bar"><i style="width:${pct}%"></i></div><div class="sub rew">Reward: ${S.rewardText(m.rew)}</div></div>`;
+    h += `<div class="mbt">${m.tgt != null ? `<button class="btn" data-act="mfocus" data-p="${m.tgt}">Show</button>` : ''}<button class="btn" data-act="mskip" data-x="${m.id}"><small style="margin:0">Skip</small></button></div></div>`;
+  }
+  return h;
 }
 
 function forcesPanel() {
@@ -864,6 +879,7 @@ function panelSig() {
   let s = UI.tab + '|' + UI.confirm;
   if (UI.tab === 'map') {
     s += `|${UI.selP}|${UI.selA}`;
+    if (UI.selP == null && !UI.selA && g.missions) s += '|' + g.missions.done + ':' + g.missions.list.map(x => x.id + '.' + Math.floor(S.mInfo(x).have * 20 / S.mInfo(x).need)).join(',');
     const a = UI.selA ? army(UI.selA) : null;
     if (UI.selA) s += a ? [a.at, a.mv && a.mv.to, a.route.length, UT.map(t => Math.round(a.u[t])).join(','), a.at != null ? Math.round(S.entrench(a, g.provs[a.at]) * 20) : ''].join(':') : 'x';
     if (UI.selP != null) {
@@ -1084,6 +1100,8 @@ document.addEventListener('click', e => {
     case 'split': { const r = S.cmdSplit(+d.a, d.k); toast(r.msg, r.ok ? 'ok' : 'bad'); if (r.ok) { UI.selA = r.id; } dirty(); break; }
     case 'merge': { const r = S.cmdMerge(m, +d.p, d.k, d.n != null ? +d.n : null); toast(r.msg, r.ok ? 'ok' : 'bad'); if (r.ok) UI.selA = r.id; dirty(); break; }
     case 'disband': S.cmdDisband(+d.a); UI.selA = null; toast('Army disbanded', 'ok'); dirty(); break;
+    case 'mfocus': selectProv(+d.p); focusOn(+d.p, 2.2); break;
+    case 'mskip': { const r = S.cmdSkipMission(+d.x); toast(r.msg, r.ok ? 'info' : 'bad'); UI.touch = 0; dirty(); break; }
     case 'homefocus': { const c = nat(m).capital; selectProv(c); focusOn(c, 1.8); break; }
     case 'focusnat': focusNation(+d.n); break;
     case 'dipopen': {

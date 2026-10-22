@@ -485,6 +485,7 @@ function cmdTrade(nat, k, q) {
   if (q < 0 && qt.cash < 0.5) return { ok: false, msg: 'Nobody is buying at this price' };
   n[k] += q; n.cash += q > 0 ? -qt.cash : qt.cash; G.mkt.idx[k] = qt.idx;
   n.mktNet = (n.mktNet || 0) + (q > 0 ? -qt.cash : qt.cash);
+  if (q < 0) n.mktSold = (n.mktSold || 0) + qt.cash;
   return { ok: true, msg: `${q > 0 ? 'Bought' : 'Sold'} ${Math.abs(Math.round(q))} ${RESN[k].n.toLowerCase()} for $${Math.round(qt.cash)}`, cash: qt.cash };
 }
 // prices drift back to normal with a little noise; the player's auto-sell runs every 10 seconds
@@ -510,6 +511,136 @@ function cmdAutoSell(nat, k, cap) {
   n.auto[k] = cap || 0;
   return { ok: true, msg: cap ? `Selling ${RESN[k].n.toLowerCase()} above ${cap}` : `Auto-sell for ${RESN[k].n.toLowerCase()} off` };
 }
+// ---------------------------------------------------------------- missions
+// Goals for the player made from the state of the game, three at a time. Progress is checked every second;
+// a finished mission pays its reward at once (resources and research points, never anything bought) and a
+// new one is drawn a little later. A mission that can no longer be done is quietly replaced.
+const MISSION_SLOTS = 3;
+const totUnits = nid => G.armies.reduce((s, a) => s + (a.owner === nid ? unitCount(a.u) : 0), 0);
+const techCount = n => Object.keys(n.tech || {}).length;
+const maxBld = (nid, k) => (D.owned[nid] || []).reduce((m, pid) => Math.max(m, G.provs[pid].b[k]), 0);
+// each kind: when it can be offered, how to set it up, and its progress [have, need]
+const MISSIONS = {
+  capture: {
+    ok: nid => enemiesOf(nid).length > 0,
+    make(n) {
+      const own = new Set(D.owned[n.id]), cands = [];
+      for (const pid of own) for (const q of PS[pid].nbrs) if (atWar(n.id, G.provs[q].owner) && !cands.includes(q)) cands.push(q);
+      if (!cands.length) return null;
+      cands.sort((a, b) => maxGar(G.provs[a]) * (1 + G.provs[a].b.fort) - maxGar(G.provs[b]) * (1 + G.provs[b].b.fort));
+      const q = cands[Math.floor(rnd(0, Math.min(3, cands.length)))], o = G.nations[G.provs[q].owner];
+      return { tgt: q, w: 3, t: `Take ${PS[q].name}`, d: `Capture ${PS[q].name} (${PS[q].stName}) from ${o.name}.` };
+    },
+    prog: (n, m) => [G.provs[m.tgt].owner === n.id ? 1 : 0, 1],
+    alive: (n, m) => G.provs[m.tgt].owner === n.id || atWar(n.id, G.provs[m.tgt].owner),
+  },
+  kills: {
+    ok: nid => enemiesOf(nid).length > 0,
+    make(n) { const N = Math.max(6, Math.round(totUnits(n.id) * 0.5 / 5) * 5); return { base: n.kills || 0, goal: N, w: 2, t: `Destroy ${N} enemy units`, d: 'Units destroyed in any battle your forces fight in count, including garrisons.' }; },
+    prog: (n, m) => [(n.kills || 0) - m.base, m.goal],
+    alive: n => enemiesOf(n.id).length > 0,
+  },
+  build: {
+    ok: () => true,
+    make(n) {
+      const opts = ['fort', 'aa', 'lab', 'arms', 'hosp', 'airb', 'army', 'infra', 'recr', 'bunk'].filter(k => BLD[k] && maxBld(n.id, k) < maxLvl(k));
+      if (PS[n.capital].coast || D.owned[n.id].some(pid => PS[pid].coast)) if (maxBld(n.id, 'naval') < maxLvl('naval')) opts.push('naval');
+      if (!opts.length) return null;
+      const k = opts[Math.floor(rnd(0, opts.length))], L = maxBld(n.id, k) + 1;
+      return { bk: k, goal: L, w: 1 + 0.5 * L, t: `Build ${BLD[k].n} level ${L}`, d: `Raise a ${BLD[k].n.toLowerCase()} to level ${L} in any of your cities.` };
+    },
+    prog: (n, m) => [maxBld(n.id, m.bk), m.goal],
+  },
+  train: {
+    ok: () => true,
+    make(n) {
+      const cats = ['Ground', 'Ground', 'Air'];
+      if (D.owned[n.id].some(pid => PS[pid].coast && G.provs[pid].b.naval > 0)) cats.push('Sea');
+      const c = cats[Math.floor(rnd(0, cats.length))], N = c === 'Ground' ? 8 : 4;
+      return { cat: c, base: (n.trained || {})[c] || 0, goal: N, w: c === 'Ground' ? 1.5 : 2, t: `Train ${N} ${c.toLowerCase()} units`, d: c === 'Sea' ? 'Ships come from cities with a naval base.' : c === 'Air' ? 'Aircraft and helicopters need an air base.' : 'Any ground unit counts.' };
+    },
+    prog: (n, m) => [((n.trained || {})[m.cat] || 0) - m.base, m.goal],
+  },
+  research: {
+    ok: n => techCount(G.nations[n]) < TK.length,
+    make(n) { return { base: techCount(n), goal: 1, w: 1.5, t: 'Finish a research project', d: 'Pick one in the Tech tab; research labs make it faster.' }; },
+    prog: (n, m) => [techCount(n) - m.base, m.goal],
+  },
+  pact: {
+    ok: nid => !G.treaties.some(t => t.type === 'trade' && (t.a === nid || t.b === nid)),
+    make() { return { w: 1, t: 'Sign a trade pact', d: 'Propose one to any nation in the Diplomacy tab. It adds cash and halves your market fee.' }; },
+    prog: n => [G.treaties.some(t => t.type === 'trade' && (t.a === n.id || t.b === n.id)) ? 1 : 0, 1],
+  },
+  ally: {
+    ok: nid => alliesOf(nid).length === 0,
+    make() { return { w: 2, t: 'Form an alliance', d: 'Nations ally with friends: build trust with a pact or a trade deal first.' }; },
+    prog: n => [alliesOf(n.id).length ? 1 : 0, 1],
+  },
+  market: {
+    ok: () => true,
+    make(n) { const N = Math.max(150, Math.round(n.rate.cash * 40 / 50) * 50); return { base: n.mktSold || 0, goal: N, w: 1, t: `Earn $${N} on the market`, d: 'Sell surplus resources in the Market tab, or let auto-sell do it.' }; },
+    prog: (n, m) => [(n.mktSold || 0) - m.base, m.goal],
+  },
+  grow: {
+    ok: nid => enemiesOf(nid).length > 0,
+    make(n) { const N = D.owned[n.id].length + 2; return { goal: N, w: 3, t: `Hold ${N} provinces`, d: 'Expand your territory.' }; },
+    prog: (n, m) => [D.owned[n.id].length, m.goal],
+  },
+  army: {
+    ok: () => true,
+    make(n) { const N = Math.round(totUnits(n.id) * 1.3 / 5) * 5 + 5; return { goal: N, w: 1.5, t: `Field ${N} units`, d: 'Count every unit in all your armies, fleets and salvos.' }; },
+    prog: (n, m) => [totUnits(n.id), m.goal],
+  },
+};
+const mInfo = m => { const n = G.nations[G.opts.player]; const [have, need] = MISSIONS[m.k].prog(n, m); return { have: Math.max(0, Math.min(have, need)), need }; };
+// reward: cash worth about a minute and a half of income per weight point, a material and some research
+function missionReward(n, w) {
+  const r = { cash: Math.round(Math.max(60, n.rate.cash * 25) * w / 5) * 5 };
+  const mats = ['comp', 'fuel', 'elec', 'rare'];
+  const lo = mats.sort((a, b) => n[a] - n[b])[0];
+  r[lo] = Math.round(30 * w);
+  if (w >= 1.5) r.rp = Math.round(15 * w);
+  return r;
+}
+function newMission(n) {
+  const ms = G.missions, used = new Set(ms.list.map(m => m.k));
+  const kinds = Object.keys(MISSIONS).filter(k => !used.has(k) && k !== ms.last && MISSIONS[k].ok(n.id));
+  for (let tries = 0; tries < 6 && kinds.length; tries++) {
+    const k = kinds.splice(Math.floor(rnd(0, kinds.length)), 1)[0];
+    const m = MISSIONS[k].make(n);
+    if (!m) continue;
+    Object.assign(m, { id: ms.next++, k, at: G.t });
+    m.rew = missionReward(n, m.w);
+    if (MISSIONS[k].prog(n, m)[0] >= MISSIONS[k].prog(n, m)[1]) { ms.next--; continue; }
+    ms.list.push(m);
+    return m;
+  }
+  return null;
+}
+function missionTick() {
+  const pid = G.opts.player, n = pid >= 0 && G.nations[pid];
+  if (!n || !n.alive) return;
+  const ms = G.missions || (G.missions = { list: [], next: 1, done: 0, wait: 0 });
+  for (const m of ms.list.slice()) {
+    const K = MISSIONS[m.k], [have, need] = K.prog(n, m);
+    if (have >= need) {
+      ms.list.splice(ms.list.indexOf(m), 1); ms.done++; ms.last = m.k;
+      for (const k in m.rew) n[k] += m.rew[k];
+      log(`Mission complete: ${m.t}. Reward ${rewardText(m.rew)}`, 'mission', { nats: [n.id] });
+      ms.wait = G.t + 30;
+    } else if (K.alive && !K.alive(n, m)) ms.list.splice(ms.list.indexOf(m), 1);
+  }
+  if (ms.list.length < MISSION_SLOTS && G.t >= (ms.wait || 0)) { newMission(n); ms.wait = G.t + (ms.list.length < MISSION_SLOTS ? 5 : 0); }
+}
+// drop a mission the player does not want; a new one is drawn a minute later
+function cmdSkipMission(id) {
+  const ms = G.missions, m = ms && ms.list.find(x => x.id === id);
+  if (!m) return { ok: false, msg: 'No such mission' };
+  ms.list.splice(ms.list.indexOf(m), 1); ms.last = m.k; ms.wait = G.t + 60;
+  return { ok: true, msg: 'Mission dropped. A new one comes in a minute.' };
+}
+const rewardText = r => Object.keys(r).map(k => k === 'cash' ? '$' + r[k] : k === 'rp' ? r[k] + ' research' : r[k] + ' ' + RESN[k].n.toLowerCase()).join(', ');
+
 // computer nations sell what piles up and buy what runs short
 function aiMarket(n) {
   const P = pers(n);
@@ -567,6 +698,8 @@ function prodTick(dt) {
       let a = G.armies.find(x => x.owner === p.owner && x.at === p.id && x.n === p.id && !x.mv && !x.route.length && !x.strike && domOf(x) === dom);
       if (a) a.u[it.type] += 1;
       else { a = newArmy(p.owner, p.id); a.u[it.type] = 1; }
+      const tn = G.nations[p.owner], cat = UNITS[it.type].cat;
+      tn.trained = tn.trained || {}; tn.trained[cat] = (tn.trained[cat] || 0) + 1;
     }
   }
 }
@@ -920,6 +1053,7 @@ function processBattles() {
       let gu = null;
       if (gf) { gu = garU(p.garrison); gf.u = gu; }
       const before = new Map(forces.filter(f => f.ref && !f.gar).map(f => [f.ref, unitCount(f.u)]));
+      const garBefore = p.garrison;
       intercept(forces);
       const salvo = forces.filter(f => f.ref && f.ref.strike).map(f => [f, f.u.msl || 0]);
       roundForces(forces, 1, true);
@@ -933,11 +1067,17 @@ function processBattles() {
         G.stats.msl = (G.stats.msl || 0) + m;
         f.u.msl = 0;
       }
-      for (const f of forces) if (f.ref && !f.gar) {
-        const a = f.ref;
-        const lost = (before.get(a) || 0) - unitCount(a.u);
-        if (lost > 0) G.nations[a.owner].lost = (G.nations[a.owner].lost || 0) + lost;
-        if (unitCount(a.u) < 0.4) gone.add(a);
+      for (const f of forces) {
+        const lost = f.gar ? garBefore - p.garrison : (before.get(f.ref) || 0) - unitCount(f.u);
+        if (f.ref && !f.gar) {
+          if (lost > 0) G.nations[f.nat].lost = (G.nations[f.nat].lost || 0) + lost;
+          if (unitCount(f.u) < 0.4) gone.add(f.ref);
+        }
+        // the units a side loses count as kills for the sides fighting it
+        if (lost > 0) {
+          const foes = [...new Set(forces.filter(g => atWar(g.nat, f.nat)).map(g => g.nat))];
+          for (const e of foes) G.nations[e].kills = (G.nations[e].kills || 0) + lost / foes.length;
+        }
       }
       p.lastBattle = G.t;
     } else if (p.garrison < maxGar(p)) {
@@ -1933,6 +2073,7 @@ function secondTick() {
   resumeMarches();
   unrestTick();
   mktTick();
+  missionTick();
   // treaties expire
   for (const t of G.treaties.slice()) if (t.exp && t.exp <= G.t) {
     G.treaties.splice(G.treaties.indexOf(t), 1);
@@ -1977,7 +2118,8 @@ function newGame(opts) {
   // pace: game seconds per real second at 1x speed (UI only); away: the world keeps running while the tab is closed
   opts = Object.assign({ player: 0, diff: 'normal', pace: 1, away: false }, opts || {});
   G = { v: SAVE_V, t: 0, acc1: 0, opts, nations: [], provs: [], armies: [], nextArmy: 1, wars: {}, treaties: [], nextTid: 1,
-        memory: [], proposals: [], nextProp: 1, log: [], seq: 0, flags: {}, grace: 240, wstat: {}, stats: {}, mkt: newMkt() };
+        memory: [], proposals: [], nextProp: 1, log: [], seq: 0, flags: {}, grace: 240, wstat: {}, stats: {}, mkt: newMkt(),
+        missions: { list: [], next: 1, done: 0, wait: 20 } };
   NATIONS.forEach((def, i) => G.nations.push(Object.assign({
     id: i, name: def.name, short: def.short, color: def.color, pers: def.pers, player: i === opts.player, alive: true,
     capital: mainOf(def.cap), infamy: 0, rate: zeroRate(),
@@ -2019,6 +2161,7 @@ function load(str) {
   if (!G.opts.pace) G.opts.pace = 1;
   if (!G.stats) G.stats = {};
   if (!G.mkt) G.mkt = newMkt();
+  if (!G.missions) G.missions = { list: [], next: 1, done: 0, wait: 0 };
   for (const n of G.nations) { if (!n.tech) n.tech = {}; if (n.rs === undefined) n.rs = null; calcMods(n); }
   refresh(); computeRates(); return G;
 }
@@ -2038,7 +2181,7 @@ return {
   atWar, allied, hasTreaty, hasAccess, truceLeft, opinion, canEnter, borders,
   unitPow, unitCount, armySpeed, routeTime, findRoute, nodeRoute, nearestNode, nodeIn, NODES, NODE_P, NODES_OF, ROADS: MAPD.roads, predictAttack, defBonus, maxGar,
   buildCost, buildTime, unitCost, canPay, provRates, canTrain, trainTime,
-  MKT_RES, MKT_BASE, AUTO_STEPS, mktPrice, mktQuote, mktFee, cmdTrade, cmdAutoSell,
+  mInfo, rewardText, cmdSkipMission, MKT_RES, MKT_BASE, AUTO_STEPS, mktPrice, mktQuote, mktFee, cmdTrade, cmdAutoSell,
   cmdRecruit, cmdBuild, cmdCancelBuild, cmdMove, cmdStop, cmdSplit, cmdMerge, cmdDisband,
   diplo, answerProposal, caretaker, evalProposal, warStat, enemiesOf, alliesOf, pers,
 };
