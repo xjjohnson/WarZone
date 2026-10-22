@@ -15,13 +15,13 @@ const army = id => G().armies.find(a => a.id === id);
 
 const UI = {
   tab: 'map', selP: null, selA: null, speed: 1, dipOpen: null, dipMsg: '', confirm: '', lastSeq: 0, started: false, modal: false,
-  view: { cx: MAP.w / 2, cy: MAP.h / 2, scale: 1 }, fit: 1, W: 0, H: 0, bk: 1, sig: '', down: 0, viewInit: false, log: false, touch: 0,
+  view: { cx: MAP.w / 2, cy: MAP.h / 2, scale: 1 }, labScale: 0, labShow: null, fit: 1, W: 0, H: 0, bk: 1, sig: '', down: 0, viewInit: false, log: false, touch: 0,
 };
 
 // ------------------------------------------------------------ svg helpers
 const svg = $('#map');
 const L = {};
-const provEls = [], bdEls = [], labEls = [], fillCache = [], bdCache = [];
+const provEls = [], bdEls = [], labEls = [], cityEls = [], stLabEls = [], fillCache = [], bdCache = [];
 const badges = new Map();
 function mk(tag, attrs, parent) {
   const e = document.createElementNS(NS, tag);
@@ -41,13 +41,21 @@ function buildMap() {
     provEls[p.id] = mk('path', { d: p.d, class: 'prov', 'data-p': p.id }, L.provs);
   });
   MAP.borders.forEach((b, i) => { bdEls[i] = mk('path', { d: b.d, class: 'bd' }, L.borders); });
-  mk('path', { d: MAP.coast, class: 'coast' }, L.borders);
+  L.stLines = mk('path', { d: MAP.stateLines, class: 'stl' }, L.borders);
+  L.coast = mk('path', { d: MAP.coast, class: 'coast' }, L.borders);
   MAP.sea.forEach(([a, b]) => mk('line', { x1: PS[a].cx, y1: PS[a].cy, x2: PS[b].cx, y2: PS[b].cy, class: 'sealane' }, L.lanes));
+  // state names when zoomed out, city names and dots when zoomed in
+  MAP.states.forEach((st, i) => {
+    const t = mk('text', { class: 'stlab', x: st.x, y: st.y }, L.labels);
+    t.textContent = st.st;
+    stLabEls[i] = t;
+  });
   MAP.provinces.forEach(p => {
-    const t = mk('text', { class: 'lab', x: p.cx, y: p.cy }, L.labels);
-    t.textContent = p.abbr;
+    cityEls[p.id] = mk('circle', { cx: p.px, cy: p.py, r: 1, class: 'city' }, L.labels);
+    const t = mk('text', { class: 'lab', x: p.px, y: p.py }, L.labels);
+    t.textContent = p.name;
     labEls[p.id] = t;
-    if (p.area < 1200) mk('circle', { cx: p.cx, cy: p.cy, r: 7, class: 'hit', 'data-p': p.id }, L.hits);
+    if (p.area < 320) mk('circle', { cx: p.cx, cy: p.cy, r: 6, class: 'hit', 'data-p': p.id }, L.hits);
   });
   L.selOut = mk('path', { class: 'selout', d: '' }, L.sel);
   L.capDots = [];
@@ -60,6 +68,7 @@ function fitView() {
   UI.view = { cx: MAP.w / 2, cy: MAP.h / 2, scale: UI.fit };
   applyView();
 }
+const LAB_ORDER = MAP.provinces.slice().sort((a, b) => PS[b.id].pop - PS[a.id].pop);
 function applyView() {
   const v = UI.view;
   v.scale = clamp(v.scale, UI.fit * 0.85, UI.fit * 10);
@@ -69,14 +78,39 @@ function applyView() {
   if (!labEls.length) return;
   const z = v.scale / UI.fit;
   UI.bk = (1 / v.scale) * clamp(1 + 0.14 * Math.log2(z), 0.92, 1.5);
-  const fs = (9.5 / v.scale).toFixed(2);
+  const fs = (9 / v.scale).toFixed(2), sw = (1.5 / v.scale).toFixed(2);
+  // city names show once a province is big enough on screen to hold one
+  const cities = z >= 1.7;
+  // hide city names that would collide on screen, keeping the bigger cities
+  if (cities && Math.abs(v.scale - UI.labScale) > v.scale * 0.02) {
+    UI.labScale = v.scale;
+    const placed = [], cw = 5.6 / v.scale, ch = 10 / v.scale;
+    UI.labShow = new Set();
+    for (const p of LAB_ORDER) {
+      const w = p.name.length * cw, x0 = p.px - w / 2, y0 = p.py - 3.5 / v.scale - ch;
+      if (placed.some(b => x0 < b[2] && x0 + w > b[0] && y0 < b[3] && y0 + ch > b[1])) continue;
+      placed.push([x0, y0, x0 + w, y0 + ch]);
+      UI.labShow.add(p.id);
+    }
+  }
   MAP.provinces.forEach(p => {
-    const t = labEls[p.id];
+    const t = labEls[p.id], show = cities && UI.labShow && UI.labShow.has(p.id);
+    t.style.display = show ? '' : 'none';
+    cityEls[p.id].style.display = cities ? '' : 'none';
+    if (!show && !cities) return;
+    cityEls[p.id].setAttribute('r', (1.8 / v.scale).toFixed(2));
     t.setAttribute('font-size', fs);
-    t.setAttribute('y', (p.cy - 4 / v.scale).toFixed(2));
-    t.style.display = (p.area < 1200 && z < 2.6) ? 'none' : '';
-    t.setAttribute('stroke-width', (1.5 / v.scale).toFixed(2));
+    t.setAttribute('y', (p.py - 3.5 / v.scale).toFixed(2));
+    t.setAttribute('stroke-width', sw);
   });
+  const sfs = (10.5 / v.scale).toFixed(2);
+  MAP.states.forEach((st, i) => {
+    const t = stLabEls[i];
+    t.style.display = cities ? 'none' : '';
+    t.setAttribute('font-size', sfs);
+    t.setAttribute('stroke-width', sw);
+  });
+  if (L.stLines) L.stLines.setAttribute('stroke-width', (1.1 / v.scale).toFixed(2));
 }
 function zoomAt(cx, cy, f) {
   const r = svg.getBoundingClientRect(), v = UI.view;
@@ -284,10 +318,13 @@ function toast(msg, kind) {
 }
 
 // ------------------------------------------------------------ panel html
-const fmtU = u => UT.filter(t => u[t] >= 0.5).map(t => `${Math.round(u[t])} ${UNITS[t].s}`).join(' · ') || 'no units';
+const fmtU = u => UT.filter(t => u[t] >= 0.5).map(t => `${Math.round(u[t])} ${UNITS[t].s}`).join(' \u00b7 ') || 'no units';
 const dotOf = n => `<i class="dot" style="background:${n.color}"></i>`;
-const costStr = c => [c.c ? '$' + c.c : '', c.st ? c.st + ' st' : '', c.f ? c.f + ' fu' : ''].filter(Boolean).join(' · ');
+const costStr = c => S.RES.filter(k => c[k]).map(k => k === 'cash' ? '$' + c[k] : c[k] + ' ' + S.RESN[k].s.toLowerCase()).join(' \u00b7 ');
+const BLD = S.BLD, BK = S.BK;
+const pname = pid => PS[pid].name;
 const f1 = x => (Math.round(x * 10) / 10).toFixed(1);
+const f2 = x => (x >= 1 ? f1(x) : (Math.round(x * 100) / 100).toFixed(2));
 const sgn = x => (x >= 0 ? '+' : '') + f1(x);
 function statusTags(a, b) {
   let h = '';
@@ -308,36 +345,50 @@ function etaOf(a) {
 function provCard(pid) {
   const g = G(), p = g.provs[pid], d = PS[pid], o = nat(p.owner), m = me(), mine = p.owner === m;
   const r = S.provRates(pid), n = nat(m >= 0 ? m : 0);
-  let h = `<div class="hd">${dotOf(o)}<h3>${d.name}</h3><small>${d.abbr}</small>`;
+  let h = `<div class="hd">${dotOf(o)}<h3>${d.name}</h3><small>${d.stName}</small>`;
   if (o.capital === pid) h += '<span class="tag hot">Capital</span>';
+  if (d.coast) h += '<span class="tag">Coast</span>';
   if (p.battle) h += '<span class="tag war">Battle</span>';
   if (p.cap) h += '<span class="tag war">Occupied</span>';
   h += '</div>';
   h += `<div class="note">${mine ? 'Yours' : o.name}${!mine && m >= 0 ? ' &middot; ' + statusTags(m, p.owner) : ''}</div>`;
   h += `<div class="kvs">
-    <div class="kv"><span>Population</span><b>${d.pop} M</b></div>
+    <div class="kv"><span>Population</span><b>${f1(d.pop)} M</b></div>
+    <div class="kv"><span>Resource</span><b>${S.RESN[d.res].n}</b></div>
     <div class="kv"><span>Garrison</span><b data-bind="g:${pid}">${f1(p.garrison)}/${f1(S.maxGar(p))}</b></div>
     <div class="kv"><span>Defence</span><b>+${Math.round(S.defBonus(p) * 100)}%</b></div>
-    <div class="kv"><span>Fort / Infra</span><b>${p.fort} / ${p.infra}</b></div>
     <div class="kv"><span>Unrest</span><b data-bind="un:${pid}">${Math.round(p.unrest * 100)}%</b><div class="bar ${p.unrest > 0.6 ? 'warn' : ''}"><i data-bar="un:${pid}" style="width:${Math.round(p.unrest * 100)}%"></i></div></div>
   </div>
-  <div class="note">Produces ${f1(r.c)} cash, ${f1(r.s)} steel, ${f1(r.f)} fuel per second.</div>`;
+  <div class="note">Makes per second: ${S.RES.filter(k => r[k] >= 0.005).map(k => `${f2(r[k])} ${S.RESN[k].n.toLowerCase()}`).join(', ')}${r.rp >= 0.005 ? `, ${f2(r.rp)} research` : ''}.</div>`;
   if (mine) {
     h += '<h4>Recruit here</h4><div class="btns">';
     for (const t of UT) {
-      const c = S.unitCost(t), ok = S.canPay(n, c);
-      h += `<button class="btn ${ok ? '' : 'dim'}" data-act="recruit" data-p="${pid}" data-t="${t}">${UNITS[t].n}<small>${costStr(c)} &middot; ${UNITS[t].time}s</small></button>`;
+      const c = S.unitCost(t);
+      if (!S.canTrain(p, t)) { h += `<button class="btn dim" disabled>${UNITS[t].n}<small>Needs ${BLD[UNITS[t].need].n.toLowerCase()}</small></button>`; continue; }
+      const ok = S.canPay(n, c);
+      h += `<button class="btn ${ok ? '' : 'dim'}" data-act="recruit" data-p="${pid}" data-t="${t}">${UNITS[t].n}<small>${costStr(c)} &middot; ${Math.round(S.trainTime(p, t))}s</small></button>`;
     }
     h += '</div>';
     if (p.q.length) h += `<div class="note">Training: ${p.q.map((it, i) => `${UNITS[it.type].s} <span class="mono" data-bind="q:${pid}:${i}">${Math.ceil(it.left)}</span>s`).join(' &rarr; ')}</div>`;
-    h += '<h4>Build</h4><div class="btns">';
-    for (const [k, nm, eff, lvl] of [['fort', 'Fortify', '+25% defence, bigger garrison', p.fort], ['infra', 'Develop', '+25% output', p.infra]]) {
-      if (lvl >= S.MAXLVL) h += `<button class="btn dim" disabled>${nm}<small>Maximum level</small></button>`;
-      else { const c = S.buildCost(k, lvl), ok = S.canPay(n, c); h += `<button class="btn ${ok ? '' : 'dim'}" data-act="build" data-p="${pid}" data-k="${k}">${nm} to ${lvl + 1}<small>${costStr(c)}</small><small>${eff}</small></button>`; }
+    h += '<h4>City buildings</h4>';
+    if (p.bq) {
+      const k = p.bq.k;
+      h += `<div class="row" style="cursor:default"><div class="grow"><div class="nm">Building ${BLD[k].n} level ${p.b[k] + 1}</div><div class="sub"><span class="mono" data-bind="bq:${pid}">${Math.ceil(p.bq.left)}</span>s left${p.cap || p.battle ? ' &middot; paused by the fighting' : ''}</div><div class="bar"><i data-bar="bq:${pid}" style="width:${Math.round(100 * (1 - p.bq.left / p.bq.total))}%"></i></div></div><button class="btn" data-act="cancelbuild" data-p="${pid}">Cancel</button></div>`;
+    }
+    h += '<div class="blds">';
+    for (const k of BK) {
+      const B = BLD[k], lvl = p.b[k];
+      if (B.coast && !d.coast) continue;
+      const pips = `<span class="pips">${'<i class="on"></i>'.repeat(lvl)}${'<i></i>'.repeat(S.MAXLVL - lvl)}</span>`;
+      if (lvl >= S.MAXLVL) { h += `<button class="btn bld dim" disabled><span class="bn">${B.n}${pips}</span><small>Maximum level</small><small class="ef">${B.d}</small></button>`; continue; }
+      const c = S.buildCost(k, lvl), ok = S.canPay(n, c) && !p.bq;
+      h += `<button class="btn bld ${ok ? '' : 'dim'}" data-act="build" data-p="${pid}" data-k="${k}"><span class="bn">${B.n}${pips}</span><small>${lvl ? 'To level ' + (lvl + 1) : 'Build'} &middot; ${costStr(c)} &middot; ${S.buildTime(k, lvl)}s</small><small class="ef">${B.d}</small></button>`;
     }
     h += '</div>';
-  } else if (m >= 0) {
-    h += `<div class="btns"><button class="btn" data-act="dipopen" data-n="${p.owner}">Diplomacy with ${o.short}</button></div>`;
+  } else {
+    const have = BK.filter(k => p.b[k] > 0).map(k => `${BLD[k].n} ${p.b[k]}`);
+    h += `<div class="note">Buildings: ${have.length ? have.join(', ') : 'none'}.</div>`;
+    if (m >= 0) h += `<div class="btns"><button class="btn" data-act="dipopen" data-n="${p.owner}">Diplomacy with ${o.short}</button></div>`;
   }
   const here = g.armies.filter(a => a.at === pid);
   if (here.length) {
@@ -353,13 +404,13 @@ function provCard(pid) {
 function armyCard(a) {
   const g = G(), n = nat(a.owner), here = a.at != null ? a.at : a.mv.to;
   const tot = S.unitCount(a.u) || 1;
-  let h = `<div class="hd">${dotOf(n)}<h3>Army ${a.id}</h3><small>${a.at != null ? 'at ' + PS[a.at].abbr : 'to ' + PS[a.mv.to].abbr}</small></div>`;
+  let h = `<div class="hd">${dotOf(n)}<h3>Army ${a.id}</h3><small>${a.at != null ? 'at ' + pname(a.at) : 'to ' + pname(a.mv.to)}</small></div>`;
   h += '<div class="kvs">';
   for (const t of UT) if (a.u[t] >= 0.5) h += `<div class="kv"><span>${UNITS[t].n}</span><b data-bind="ac:${a.id}:${t}">${Math.round(a.u[t])}</b></div>`;
   h += `<div class="kv"><span>Speed</span><b>${S.armySpeed(a)}</b></div></div>`;
   if (a.mv || a.route.length) h += `<div class="note">Marching &middot; ETA <b class="mono" data-bind="eta:${a.id}">${Math.ceil(etaOf(a))}</b>s</div>`;
   else if (g.provs[here].battle) h += '<div class="note down">Engaged in battle.</div>';
-  else h += '<div class="note">Waiting for orders. Tap a state on the map to march.</div>';
+  else h += '<div class="note">Waiting for orders. Tap a province on the map to march.</div>';
   if (UI.selP != null && UI.selP !== here) {
     const tp = g.provs[UI.selP], to = nat(tp.owner);
     h += `<h4>Target: ${PS[UI.selP].name}</h4>`;
@@ -392,7 +443,7 @@ function mapPanel() {
   if (UI.selA) { const a = army(UI.selA); if (a) return armyCard(a); UI.selA = null; }
   if (UI.selP != null) return provCard(UI.selP);
   return `<div class="hd"><h3>Orders</h3></div>
-  <p class="note">Tap an army badge, then tap a state to march. Tap any state for details, recruiting and building. Pinch or scroll to zoom.</p>
+  <p class="note">Tap an army badge, then tap a province to march. Tap any province for details, recruiting and city buildings. Pinch or scroll to zoom; city names appear as you zoom in.</p>
   <div class="btns"><button class="btn" data-act="homefocus">Go to my capital</button></div>`;
 }
 
@@ -403,9 +454,9 @@ function forcesPanel() {
   for (const a of mine) for (const t of UT) tot[t] += a.u[t];
   let h = `<h4>Total forces</h4><div class="kvs">${UT.map(t => `<div class="kv"><span>${UNITS[t].n}</span><b>${Math.round(tot[t])}</b></div>`).join('')}<div class="kv"><span>Upkeep / s</span><b>${f1(n.rate.up)}</b></div></div>`;
   h += '<h4>Armies</h4>';
-  if (!mine.length) h += '<p class="note">No armies. Recruit units in one of your states.</p>';
+  if (!mine.length) h += '<p class="note">No armies. Recruit units in one of your provinces.</p>';
   for (const a of mine) {
-    const st = a.mv ? `marching to ${PS[a.mv.to].abbr}` : (g.provs[a.at].battle ? 'in battle' : 'at ' + PS[a.at].abbr);
+    const st = a.mv ? `marching to ${pname(a.mv.to)}` : (g.provs[a.at].battle ? 'in battle' : 'at ' + pname(a.at));
     h += `<div class="row" tabindex="0" data-act="selarmy" data-a="${a.id}"><div class="grow"><div class="nm">Army ${a.id} <span class="sub">${st}</span></div><div class="sub">${fmtU(a.u)}</div></div></div>`;
   }
   const q = g.provs.filter(p => p.owner === m && p.q.length);
@@ -460,7 +511,7 @@ function dipPanel() {
   for (const o of g.nations) {
     if (!o.alive || o.id === m) continue;
     const op = S.opinion(o.id, m).total, open = UI.dipOpen === o.id;
-    h += `<div class="row" tabindex="0" data-act="dipopen" data-n="${o.id}"><div class="grow"><div class="nm">${dotOf(o)} ${o.name}</div><div class="sub">${S.D.owned[o.id].length} states &middot; strength ${Math.round(S.D.power[o.id] / 100)} ${statusTags(m, o.id)}</div></div><span class="num ${op >= 0 ? 'up' : 'down'}">${op >= 0 ? '+' : ''}${op}</span></div>`;
+    h += `<div class="row" tabindex="0" data-act="dipopen" data-n="${o.id}"><div class="grow"><div class="nm">${dotOf(o)} ${o.name}</div><div class="sub">${S.D.owned[o.id].length} provinces &middot; strength ${Math.round(S.D.power[o.id] / 100)} ${statusTags(m, o.id)}</div></div><span class="num ${op >= 0 ? 'up' : 'down'}">${op >= 0 ? '+' : ''}${op}</span></div>`;
     if (open) h += dipDetail(o);
   }
   h += `<p class="note">The number is how each nation feels about you. Breaking a treaty costs reputation with everyone.</p>`;
@@ -469,7 +520,7 @@ function dipPanel() {
 
 function intelPanel() {
   const g = G(), D = S.D, m = me();
-  let h = '<h4>Standings</h4><table><tr><th>Nation</th><th>States</th><th>Pop</th><th>Power</th></tr>';
+  let h = '<h4>Standings</h4><table><tr><th>Nation</th><th>Provinces</th><th>Pop</th><th>Power</th></tr>';
   const rows = g.nations.filter(n => n.alive).sort((a, b) => D.owned[b.id].length - D.owned[a.id].length || D.pop[b.id] - D.pop[a.id]);
   for (const n of rows) h += `<tr><td>${dotOf(n)} ${n.id === m ? '<b>' + n.short + '</b>' : n.short}</td><td class="mono">${D.owned[n.id].length}</td><td class="mono">${Math.round(D.share[n.id] * 100)}%</td><td class="mono">${Math.round(D.power[n.id] / 100)}</td></tr>`;
   h += '</table>';
@@ -477,10 +528,11 @@ function intelPanel() {
   if (dead.length) h += `<p class="note">Fallen: ${dead.map(n => n.short).join(', ')}</p>`;
   h += '<h4>Game</h4><div class="btns"><button class="btn" data-act="save">Save game</button><button class="btn warn" data-act="newgame">New game</button></div>';
   h += `<details><summary>How to play</summary>
-  <p>Tap an army badge, then tap a state to march there. Armies need passage rights to cross land you are at peace with.</p>
-  <p>Declare war from the Diplomacy tab. A state falls when its garrison is beaten and you hold it for a few seconds.</p>
-  <p>Conquered states are restless. Keep troops there, or they rise up and return to their old owners or go independent.</p>
-  <p>Armor beats infantry, air beats armor, infantry handles air, artillery shines behind a front. Fortify the border you expect to be hit.</p>
+  <p>Tap an army badge, then tap a province to march there. Armies need passage rights to cross land you are at peace with.</p>
+  <p>Declare war from the Diplomacy tab. A province falls when its garrison is beaten and you hold it for a few seconds.</p>
+  <p>Each province is a city region that produces cash, manpower and one resource. Build in its city: an army base to train artillery and armor, an air base for air wings, bunkers and hospitals to hold it, and industry to grow.</p>
+  <p>Conquered provinces are restless. Keep troops there, or they rise up and return to their old owners or go independent.</p>
+  <p>Armor beats infantry, air beats armor, infantry handles air, artillery shines behind a front. Put bunkers on the border you expect to be hit.</p>
   <p>There is no premium currency and no forced ending. Past 60% of the population the game asks once if you want to stop. The late game keeps going: coalitions form against a runaway power.</p></details>`;
   h += '<h4>Events</h4>';
   const ev = g.log.slice(-40).reverse();
@@ -513,8 +565,8 @@ function panelSig() {
     if (UI.selA) s += a ? [a.at, a.mv && a.mv.to, a.route.length, UT.map(t => Math.round(a.u[t])).join(',')].join(':') : 'x';
     if (UI.selP != null) {
       const p = g.provs[UI.selP];
-      s += [p.owner, p.fort, p.infra, p.q.length, p.battle ? 1 : 0, p.cap ? 1 : 0, g.armies.filter(x => x.at === UI.selP).map(x => x.id + '.' + x.owner + '.' + Math.round(S.unitCount(x.u))).join('/')].join('|');
-      if (n && p.owner === m) s += UT.map(t => S.canPay(n, S.unitCost(t)) ? 1 : 0).join('') + [['fort', p.fort], ['infra', p.infra]].map(([k, l]) => l < S.MAXLVL && S.canPay(n, S.buildCost(k, l)) ? 1 : 0).join('');
+      s += [p.owner, BK.map(k => p.b[k]).join(''), p.bq ? p.bq.k : '', p.q.length, p.battle ? 1 : 0, p.cap ? 1 : 0, g.armies.filter(x => x.at === UI.selP).map(x => x.id + '.' + x.owner + '.' + Math.round(S.unitCount(x.u))).join('/')].join('|');
+      if (n && p.owner === m) s += UT.map(t => S.canPay(n, S.unitCost(t)) ? 1 : 0).join('') + BK.map(k => p.b[k] < S.MAXLVL && S.canPay(n, S.buildCost(k, p.b[k])) ? 1 : 0).join('');
       if (UI.selA && a) { const tp = g.provs[UI.selP]; s += S.atWar(a.owner, tp.owner) + '' + S.hasAccess(a.owner, tp.owner); }
     }
   } else if (UI.tab === 'forces') {
@@ -546,11 +598,13 @@ function updateBinds() {
     else if (k[0] === 'q') { const it = g.provs[+k[1]].q[+k[2]]; v = it ? Math.ceil(it.left) : ''; }
     else if (k[0] === 'ac') { const a = army(+k[1]); v = a ? Math.round(a.u[k[2]]) : ''; }
     else if (k[0] === 'eta') { const a = army(+k[1]); v = a ? Math.ceil(etaOf(a)) : ''; }
+    else if (k[0] === 'bq') { const q = g.provs[+k[1]].bq; v = q ? Math.ceil(q.left) : ''; }
     if (v !== null && e.textContent !== String(v)) e.textContent = v;
   });
   document.querySelectorAll('#sheet [data-bar]').forEach(e => {
     const k = e.dataset.bar.split(':');
     if (k[0] === 'un') e.style.width = Math.round(g.provs[+k[1]].unrest * 100) + '%';
+    else if (k[0] === 'bq') { const q = g.provs[+k[1]].bq; if (q) e.style.width = Math.round(100 * (1 - q.left / q.total)) + '%'; }
   });
 }
 
@@ -560,12 +614,12 @@ function renderHeader() {
   $('#whoName').textContent = n ? n.short : 'Observer';
   $('#whoDot').style.background = n ? n.color : 'var(--ink2)';
   const day = Math.floor(g.t / 2) + 1;
-  $('#clock').textContent = `Day ${day}` + (n ? ` · ${S.D.owned[m].length} states` : '');
+  $('#clock').textContent = `Day ${day}` + (n ? ` \u00b7 ${S.D.owned[m].length} provinces` : '');
   if (!n) { $('#res').innerHTML = `<span class="rs"><small>${g.nations.filter(x => x.alive).length} nations alive</small></span>`; return; }
   const r = n.rate;
   const chip = (lab, val, rate) => `<span class="rs"><small>${lab}</small><b>${Math.floor(val)}</b><em class="${rate >= 0 ? 'up' : 'down'}">${sgn(rate)}</em></span>`;
   const units = S.D.armiesBy[m].reduce((s, a) => s + S.unitCount(a.u), 0);
-  $('#res').innerHTML = chip('Cash', n.cash, r.net) + chip('Steel', n.steel, r.s) + chip('Fuel', n.fuel, r.f) + `<span class="rs"><small>Army</small><b>${Math.round(units)}</b></span>`;
+  $('#res').innerHTML = chip('Cash', n.cash, r.net) + S.RES.filter(k => k !== 'cash').map(k => chip(S.RESN[k].s, n[k], r[k])).join('') + chip('Research', n.rp, r.rp) + `<span class="rs"><small>Army</small><b>${Math.round(units)}</b></span>`;
   const pend = g.proposals.filter(p => p.to === m).length, bd = $('#dipBadge');
   bd.hidden = !pend; bd.textContent = pend;
 }
@@ -576,12 +630,13 @@ function closeModal() { $('#modal').hidden = true; UI.modal = false; }
 let startDiff = 'normal';
 function showStart() {
   let saved = null;
-  try { const s = localStorage.getItem(SAVE_KEY); if (s) { const o = JSON.parse(s); saved = { day: Math.floor(o.t / 2) + 1, who: o.opts.player >= 0 ? o.nations[o.opts.player].short : 'Observer' }; } } catch (_) {}
+  try { const s = localStorage.getItem(SAVE_KEY); if (s) { const o = JSON.parse(s); if (S.saveOk(o)) saved = { day: Math.floor(o.t / 2) + 1, who: o.opts.player >= 0 ? o.nations[o.opts.player].short : 'Observer' }; } } catch (_) {}
   let cards = '';
   S.NATIONS.forEach((def, i) => {
-    const pop = def.states.reduce((s, ab) => s + PS.find(p => p.abbr === ab).pop, 0);
-    const inc = def.states.reduce((s, ab) => { const p = PS.find(q => q.abbr === ab); return s + p.cash; }, 0);
-    cards += `<button class="nc" data-act="pick" data-v="${i}"><div class="strip" style="background:${def.color}"></div><div class="in"><b>${def.name}</b><span>${def.states.length} states &middot; capital ${def.cap}</span><div class="st">${Math.round(pop)}M people &middot; $${inc.toFixed(1)}/s</div></div></button>`;
+    const ps = PS.filter(p => def.states.includes(p.st));
+    const pop = ps.reduce((s, p) => s + p.pop, 0), inc = ps.reduce((s, p) => s + p.cash, 0);
+    const cap = ps.filter(p => p.st === def.cap).sort((a, b) => b.pop - a.pop)[0];
+    cards += `<button class="nc" data-act="pick" data-v="${i}"><div class="strip" style="background:${def.color}"></div><div class="in"><b>${def.name}</b><span>${def.states.length} states &middot; ${ps.length} provinces &middot; capital ${cap.name}</span><div class="st">${Math.round(pop)}M people &middot; $${inc.toFixed(1)}/s</div></div></button>`;
   });
   modal(`<div class="title">Frontline<br>USA</div>
   <p class="lede">Real-time grand strategy on the American map. Ten rival powers, one continent. No premium currency, no timers to buy out, no forced ending.</p>
@@ -606,7 +661,7 @@ function afterStart() {
   closeModal();
   if (UI.W) { if (m >= 0) focusNation(m); else fitView(); }
   renderHeader(); renderPanel(); drawMap(performance.now());
-  if (m >= 0) toast('Your armies are the numbered badges. Tap one, then tap a state.', 'ok');
+  if (m >= 0) toast('Your armies are the numbered badges. Tap one, then tap a province.', 'ok');
 }
 function saveNow(quiet) {
   try { localStorage.setItem(SAVE_KEY, S.serialize()); if (!quiet) toast('Game saved', 'ok'); }
@@ -648,6 +703,7 @@ document.addEventListener('click', e => {
     case 'continue': if (!loadSaved()) toast('No save found', 'bad'); break;
     case 'recruit': { const r = S.cmdRecruit(m, +d.p, d.t); toast(r.msg, r.ok ? 'ok' : 'bad'); dirty(); break; }
     case 'build': { const r = S.cmdBuild(m, +d.p, d.k); toast(r.msg, r.ok ? 'ok' : 'bad'); dirty(); break; }
+    case 'cancelbuild': { const r = S.cmdCancelBuild(m, +d.p); toast(r.msg, r.ok ? 'ok' : 'bad'); dirty(); break; }
     case 'selarmy': selectArmy(+d.a); break;
     case 'selprov': selectProv(+d.p); break;
     case 'stop': S.cmdStop(+d.a); toast('Halting at the next stop', 'ok'); dirty(); break;
@@ -710,7 +766,7 @@ function tickUI() {
   }
   if (g.flags.dominanceAsk && !UI.modal) {
     g.flags.dominanceAsk = false;
-    modal(`<div class="title">Dominance</div><p class="lede">Your nation now holds more than 60% of the population. You can stop here and look at the standings, or keep going. The world will not let you rest: neighbours form coalitions, conquered states revolt, and rivals rebuild.</p><div class="btns"><button class="btn pri" data-act="keep">Keep playing</button><button class="btn" data-act="finish">See standings</button></div>`);
+    modal(`<div class="title">Dominance</div><p class="lede">Your nation now holds more than 60% of the population. You can stop here and look at the standings, or keep going. The world will not let you rest: neighbours form coalitions, conquered provinces revolt, and rivals rebuild.</p><div class="btns"><button class="btn pri" data-act="keep">Keep playing</button><button class="btn" data-act="finish">See standings</button></div>`);
   }
   if (g.flags.playerDead && !UI.modal) {
     g.flags.playerDead = false;

@@ -11,6 +11,7 @@
   "license": "ISC",
   "dependencies": {
     "@sparticuz/chromium": "^153.0.0",
+    "all-the-cities": "^3.1.0",
     "d3-geo": "^3.1.1",
     "jsdom": "^29.1.1",
     "puppeteer-core": "^25.15.0",

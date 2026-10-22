@@ -15,8 +15,8 @@ The owner (Justin) asked for these changes relative to the original game:
 - `sim.js`: the whole simulation, economy, combat, diplomacy and AI. Defines `const SIM = (function(){...})()` and expects a global `MAP`.
 - `ui.js`: the interface, one IIFE (SVG map, pan/zoom, panels, modals, save/load, frame loop).
 - `template.html`: CSS and markup with placeholders `/*MAPDATA*/ /*SIM*/ /*UI*/`.
-- `mapdata.json`: generated map: `{w,h,provinces[{id,abbr,name,cx,cy,area,d,nbrs}],borders[{a,b,d}],coast,sea}`. 51 provinces, 107 borders.
-- `buildmap.mjs`: regenerates `mapdata.json` from us-atlas `states-albers-10m` (975x610 Albers USA), simplified with topojson-simplify. Adjacency from `topojson.neighbors`, plus manual sea lanes AK-WA and HI-CA (distance 330).
+- `mapdata.json`: generated map: `{w,h,provinces[{id,st,name,cx,cy,px,py,area,pw,coast,d,nbrs}],borders[{a,b,d}],stateLines,coast,sea[[a,b,dist]],states[{st,name,x,y}]}`. 217 city provinces, 542 borders. `cx,cy` is the anchor for badges and routes, `px,py` the city dot, `pw` the province's share of its state's population.
+- `buildmap.mjs`: regenerates `mapdata.json` from us-atlas `counties-albers-10m` (975x610 Albers USA) and city data from `all-the-cities` (GeoNames). Each state is split into a few provinces named after their main city: seed cities are picked by population and spacing, and counties join the nearest seed through county adjacency, so provinces stay contiguous. `RENAME`, `SKIP`, `NOT_COASTAL` and `K_OVERRIDE` hold hand fixes. Sea lanes: Anchorage-Seattle and Honolulu-Los Angeles (330), plus short lanes that connect islands inside a state.
 - `make.js`: assembles everything into one self-contained `frontline-usa.html` (about 207 KB). Copy that to `dist/index.html`, which is the playable file.
 - `test.js`: headless all-AI run: `node test.js <minutes> <easy|normal|hard>`.
 - `smoke.js`: jsdom UI smoke test (needs `npm install`, and reads the built `frontline-usa.html`, so run `node make.js` first).
@@ -28,12 +28,16 @@ Workflow: edit `sim.js` / `ui.js` / `template.html`, run `node make.js`, copy `f
 - Vanilla JS, inline SVG map. Layout must work at 400px wide with no horizontal page scroll. Touch is the primary input.
 - Light and dark themes via CSS tokens on `:root` (dark via `prefers-color-scheme` and `[data-theme]`). Keep the `claude:viewport-fit-sides` meta and side gutters.
 - No monetization, ads or pay-to-win mechanics, ever.
-- Saves go to `localStorage` key `frontline_usa_save_v1`, always inside try/catch.
+- Saves go to `localStorage` key `frontline_usa_save_v1`, always inside try/catch. The save carries `G.v` (`SAVE_V`, now 2); `SIM.saveOk` rejects saves from the old 51-state map.
 
 ## Game design
 **Nations.** 10 fictional regional nations covering all 51 provinces: Pacific Republic, Mountain Pact, Southwest Compact, Heartland Union, Lakes League, Delta Pact, Seaboard Commonwealth, Appalachian Federation, Atlantic Dominion, New England Concord. Each has a personality (warmonger, opportunist, turtle, diplomat, builder), a capital and a colour. Conquered provinces can revolt back to the original owner or become a "Free State" nation.
 
-**Economy.** Cash, steel and fuel come from per-province data (population, steel, fuel, terrain defence). Units cost cash upkeep. Buildings: forts and infrastructure.
+**Provinces.** Each state is split into city provinces (`PS[pid].st` is the state). The old per-state numbers in `STATE` (population, terrain, resource list) are shared out by `pw`. Nations still own whole states at the start; the capital is the biggest province of the capital state (`mainOf`).
+
+**Economy.** Seven resources (`RES`): cash, manpower, supplies, components, fuel, electronics, rare materials, plus research points (`n.rp`). Every province makes cash and manpower from population, some supplies, and one primary resource (`PS.res`, from the state's resource list). Capitals make a trickle of everything. Units cost cash upkeep. Costs are objects keyed by resource (`canPay`, `pay`). Stocks of non-cash resources tend to pile up; the market (to-do #7) is meant to turn surplus into cash.
+
+**City buildings.** `BLD` in `sim.js`, stored per province in `p.b[kind]` (levels 0-3), one construction at a time in `p.bq` (paused under siege). Army base (needed for artillery and armor), air base (needed for air), naval base (coastal only, port cash), recruiting office, arms industry, hospital (less damage for the owner's troops), bunkers (`fort`: defence and garrison), research lab, infrastructure. Level n costs and takes n times the base. Capture drops every building one level. AI: `aiBuild` scores projects (production first, defence by threat, economy by shortage) and keeps 40 of each resource for units.
 
 **Units.** Infantry (`inf`), artillery (`art`), armor (`arm`), air (`air`), with a damage multiplier matrix and target weights.
 
@@ -65,7 +69,7 @@ Workflow: edit `sim.js` / `ui.js` / `template.html`, run `node make.js`, copy `f
 
 ## Testing
 - `node test.js 20 normal` — AI-only game; expect wars, captures, eliminations, uprisings, some ceasefires and no exceptions (about 1.5s for 20-30 game minutes on all difficulties).
-- `node smoke.js` — jsdom run through every panel. The final war-declaration step can be flaky from jsdom's slow requestAnimationFrame (timing, not a bug).
+- `node smoke.js` — jsdom run through every panel. The final war-declaration and save steps can be flaky from jsdom's slow requestAnimationFrame, or when the player gets eliminated during the simulated minutes (timing, not a bug).
 - Real-browser checks used headless Chromium (`@sparticuz/chromium` + `puppeteer-core`). `@sparticuz/chromium` is ESM-only: `(await import('@sparticuz/chromium')).default`. Block all http(s) requests with request interception or Google Fonts requests make screenshots hang.
 - Last perf check: step 0.25ms, draw 0.16ms, panel render 0.9ms (about 17 fps in software-rendered headless, raster-bound). Draw loop is throttled to about 30 fps.
 
