@@ -101,10 +101,10 @@ b, strong { font-weight: 600; }
 .toast.capture { border-left-color: var(--hot); } .toast.proposal { border-left-color: #4C8DF2; } .toast.elim, .toast.revolt { border-left-color: #9B7DE8; }
 
 #side { display: flex; flex-direction: column; min-height: 0; max-height: 42vh; border-top: 2px solid var(--ink); background: var(--paper); }
-#side[data-tab="forces"], #side[data-tab="dip"], #side[data-tab="intel"] { max-height: 62vh; }
+#side[data-tab="forces"], #side[data-tab="dip"], #side[data-tab="intel"], #side[data-tab="market"] { max-height: 62vh; }
 #side.collapsed #sheet { display: none; }
 #sheet { overflow-y: auto; overscroll-behavior: contain; padding: 10px var(--gr) 12px var(--gl); flex: 1; min-height: 0; }
-#tabs { display: grid; grid-template-columns: repeat(5, 1fr); border-top: 1px solid var(--line); background: var(--paper2); padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
+#tabs { display: grid; grid-template-columns: repeat(6, 1fr); border-top: 1px solid var(--line); background: var(--paper2); padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
 #tabs button { background: none; border: 0; border-top: 3px solid transparent; padding: 8px 4px 9px; font: 800 15px var(--display); letter-spacing: .09em; text-transform: uppercase; color: var(--ink2); cursor: pointer; position: relative; min-height: 40px; }
 #tabs button[aria-selected="true"] { color: var(--ink); border-top-color: var(--ink); background: var(--paper); }
 #tabs .badge { position: absolute; top: 3px; right: 4px; min-width: 17px; height: 17px; border-radius: 9px; background: var(--warn); color: #fff; font: 700 11px/17px var(--mono); text-align: center; padding: 0 4px; }
@@ -112,7 +112,14 @@ b, strong { font-weight: 600; }
 h3 { margin: 0; font: 800 22px/1 var(--display); letter-spacing: .05em; text-transform: uppercase; }
 h4 { margin: 14px 0 6px; font: 600 10.5px var(--body); letter-spacing: .14em; text-transform: uppercase; color: var(--ink2); }
 h4:first-child { margin-top: 0; }
-@media (max-width: 480px) { #tabs button { font-size: 13px; letter-spacing: .03em; padding-left: 2px; padding-right: 2px; } }
+#tabs .ts { display: none; }
+@media (max-width: 480px) { #tabs button { font-size: 13px; letter-spacing: .03em; padding-left: 2px; padding-right: 2px; } #tabs .tl { display: none; } #tabs .ts { display: inline; } }
+.mrow { padding: 8px 0 2px; border-bottom: 1px solid var(--line); }
+.mtop { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.mtop em { font-style: normal; font-size: 11px; }
+.mrow .sub { color: var(--ink2); font-size: 12px; margin-top: 2px; }
+.mrow .btns .btn { padding: 5px 8px; min-height: 34px; }
+#res .rs[data-act] { cursor: pointer; }
 .btn.tech.done { border-color: var(--good); }
 .cat { margin: 8px 0 2px; font: 600 10px var(--body); letter-spacing: .1em; text-transform: uppercase; color: var(--ink3, var(--ink2)); }
 .hd { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; flex-wrap: wrap; }
@@ -216,8 +223,9 @@ details p { margin: 4px 0 8px; color: var(--ink2); }
     <nav id="tabs" role="tablist">
       <button role="tab" data-act="tab" data-v="map" aria-selected="true">Map</button>
       <button role="tab" data-act="tab" data-v="forces" aria-selected="false">Forces</button>
-      <button role="tab" data-act="tab" data-v="dip" aria-selected="false">Diplomacy<span class="badge" id="dipBadge" hidden></span></button>
+      <button role="tab" data-act="tab" data-v="dip" aria-selected="false"><span class="tl">Diplomacy</span><span class="ts">Diplo</span><span class="badge" id="dipBadge" hidden></span></button>
       <button role="tab" data-act="tab" data-v="tech" aria-selected="false">Tech</button>
+      <button role="tab" data-act="tab" data-v="market" aria-selected="false">Market</button>
       <button role="tab" data-act="tab" data-v="intel" aria-selected="false">Intel</button>
     </nav>
   </aside>
@@ -680,6 +688,75 @@ function econTick(dt) {
 }
 const canPay = (n, c) => RES.every(k => !c[k] || n[k] >= c[k]);
 const pay = (n, c) => { for (const k of RES) if (c[k]) n[k] -= c[k]; };
+
+// ---------------------------------------------------------------- market
+// One world market where every nation sells surplus for cash and buys what it lacks. Each resource has a
+// base price; a price index (G.mkt.idx) falls as nations sell and rises as they buy, by a factor of e for
+// every MKT_DEPTH units, and drifts back towards 1. Each trade pays a fee, halved with any trade pact.
+const MKT_RES = ['man', 'sup', 'comp', 'fuel', 'elec', 'rare'];
+const MKT_BASE = { man: 0.8, sup: 0.6, comp: 1.5, fuel: 1.3, elec: 1.7, rare: 1.9 };
+const MKT_DEPTH = 800;
+const MKT_MIN = 0.3, MKT_MAX = 3;
+const AUTO_STEPS = [0, 250, 500, 1000, 2500];     // auto-sell thresholds the player can pick (0 = off)
+const newMkt = () => ({ idx: Object.fromEntries(MKT_RES.map(k => [k, 1])), prev: Object.fromEntries(MKT_RES.map(k => [k, 1])) });
+const mktFee = nat => G.treaties.some(t => t.type === 'trade' && (t.a === nat || t.b === nat)) ? 0.05 : 0.1;
+const mktPrice = k => MKT_BASE[k] * G.mkt.idx[k];
+// what q units would cost (q > 0, buying) or fetch (q < 0, selling), walking the price as the trade fills
+function mktQuote(nat, k, q) {
+  const i0 = G.mkt.idx[k], fee = mktFee(nat);
+  if (q > 0) {
+    const i1 = Math.min(MKT_MAX, i0 * Math.exp(q / MKT_DEPTH));
+    return { cash: MKT_BASE[k] * MKT_DEPTH * (i1 - i0) * (1 + fee), idx: i1, fee };
+  }
+  const i1 = Math.max(MKT_MIN, i0 * Math.exp(q / MKT_DEPTH));
+  return { cash: MKT_BASE[k] * MKT_DEPTH * (i0 - i1) * (1 - fee), idx: i1, fee };
+}
+function cmdTrade(nat, k, q) {
+  const n = G.nations[nat];
+  if (!n || !MKT_BASE[k] || !q) return { ok: false, msg: 'Nothing to trade' };
+  if (q < 0 && n[k] < -q - 1e-9) return { ok: false, msg: `Not enough ${RESN[k].n.toLowerCase()}` };
+  const qt = mktQuote(nat, k, q);
+  if (q > 0 && n.cash < qt.cash) return { ok: false, msg: 'Not enough cash' };
+  if (q < 0 && qt.cash < 0.5) return { ok: false, msg: 'Nobody is buying at this price' };
+  n[k] += q; n.cash += q > 0 ? -qt.cash : qt.cash; G.mkt.idx[k] = qt.idx;
+  n.mktNet = (n.mktNet || 0) + (q > 0 ? -qt.cash : qt.cash);
+  return { ok: true, msg: `${q > 0 ? 'Bought' : 'Sold'} ${Math.abs(Math.round(q))} ${RESN[k].n.toLowerCase()} for $${Math.round(qt.cash)}`, cash: qt.cash };
+}
+// prices drift back to normal with a little noise; the player's auto-sell runs every 10 seconds
+function mktTick() {
+  for (const k of MKT_RES) {
+    let i = G.mkt.idx[k];
+    i += (1 - i) * 0.004 + i * rnd(-0.004, 0.004);
+    G.mkt.idx[k] = clamp(i, MKT_MIN, MKT_MAX);
+  }
+  if (Math.floor(G.t) % 60 === 0) G.mkt.prev = Object.assign({}, G.mkt.idx);
+  if (Math.floor(G.t) % 10 === 0) for (const n of G.nations) {
+    if (!n.alive || !n.auto) continue;
+    for (const k of MKT_RES) {
+      const cap = n.auto[k];
+      if (cap && n[k] > cap + 5 && G.mkt.idx[k] > MKT_MIN * 1.2) cmdTrade(n.id, k, -Math.min(n[k] - cap, 150));
+    }
+  }
+}
+function cmdAutoSell(nat, k, cap) {
+  const n = G.nations[nat];
+  if (!MKT_BASE[k]) return { ok: false, msg: 'Unknown resource' };
+  n.auto = n.auto || {};
+  n.auto[k] = cap || 0;
+  return { ok: true, msg: cap ? `Selling ${RESN[k].n.toLowerCase()} above ${cap}` : `Auto-sell for ${RESN[k].n.toLowerCase()} off` };
+}
+// computer nations sell what piles up and buy what runs short
+function aiMarket(n) {
+  const P = pers(n);
+  for (const k of MKT_RES) {
+    const keep = k === 'man' ? 250 : 300, idx = G.mkt.idx[k];
+    if (n[k] > keep && (idx > 0.55 || (n.cash < 60 && idx > MKT_MIN * 1.1))) {
+      cmdTrade(n.id, k, -Math.min((n[k] - keep) * 0.3, 80));
+    } else if (n[k] < 30 && n.cash > P.reserve * 1.5 && idx < 1.6) {
+      cmdTrade(n.id, k, 40);
+    }
+  }
+}
 const unitCost = t => UNITS[t].cost;
 const scaleCost = (c, f) => { const o = {}; for (const k in c) o[k] = Math.round(c[k] * f); return o; };
 const buildCost = (kind, lvl) => scaleCost(BLD[kind].cost, lvl + 1);
@@ -2001,6 +2078,7 @@ function aiThink(n) {
   aiNavy(n);
   aiMissiles(n);
   aiResearch(n);
+  aiMarket(n);
   n.ai.cycle = (n.ai.cycle || 0) + 1;
   opMemo = null;
   if (n.ai.cycle % 4 === 0) { aiDiplomacy(n); aiWar(n); }
@@ -2089,6 +2167,7 @@ function secondTick() {
   processBattles();
   resumeMarches();
   unrestTick();
+  mktTick();
   // treaties expire
   for (const t of G.treaties.slice()) if (t.exp && t.exp <= G.t) {
     G.treaties.splice(G.treaties.indexOf(t), 1);
@@ -2133,7 +2212,7 @@ function newGame(opts) {
   // pace: game seconds per real second at 1x speed (UI only); away: the world keeps running while the tab is closed
   opts = Object.assign({ player: 0, diff: 'normal', pace: 1, away: false }, opts || {});
   G = { v: SAVE_V, t: 0, acc1: 0, opts, nations: [], provs: [], armies: [], nextArmy: 1, wars: {}, treaties: [], nextTid: 1,
-        memory: [], proposals: [], nextProp: 1, log: [], seq: 0, flags: {}, grace: 240, wstat: {}, stats: {} };
+        memory: [], proposals: [], nextProp: 1, log: [], seq: 0, flags: {}, grace: 240, wstat: {}, stats: {}, mkt: newMkt() };
   NATIONS.forEach((def, i) => G.nations.push(Object.assign({
     id: i, name: def.name, short: def.short, color: def.color, pers: def.pers, player: i === opts.player, alive: true,
     capital: mainOf(def.cap), infamy: 0, rate: zeroRate(),
@@ -2174,6 +2253,7 @@ function load(str) {
   for (const a of G.armies) if (a.since === undefined) a.since = a.mv ? null : G.t;
   if (!G.opts.pace) G.opts.pace = 1;
   if (!G.stats) G.stats = {};
+  if (!G.mkt) G.mkt = newMkt();
   for (const n of G.nations) { if (!n.tech) n.tech = {}; if (n.rs === undefined) n.rs = null; calcMods(n); }
   refresh(); computeRates(); return G;
 }
@@ -2193,6 +2273,7 @@ return {
   atWar, allied, hasTreaty, hasAccess, truceLeft, opinion, canEnter, borders,
   unitPow, unitCount, armySpeed, routeTime, findRoute, nodeRoute, nearestNode, nodeIn, NODES, NODE_P, NODES_OF, ROADS: MAPD.roads, predictAttack, defBonus, maxGar,
   buildCost, buildTime, unitCost, canPay, provRates, canTrain, trainTime,
+  MKT_RES, MKT_BASE, AUTO_STEPS, mktPrice, mktQuote, mktFee, cmdTrade, cmdAutoSell,
   cmdRecruit, cmdBuild, cmdCancelBuild, cmdMove, cmdStop, cmdSplit, cmdMerge, cmdDisband,
   diplo, answerProposal, caretaker, evalProposal, warStat, enemiesOf, alliesOf, pers,
 };
@@ -2380,6 +2461,16 @@ function focusNation(id) {
 
 const stage = $('#stage');
 $('#sheet').addEventListener('pointerdown', () => { UI.touch = performance.now(); });
+// a tap on a resource in the top bar opens the market (handled on the bar, since its chips are redrawn often)
+{
+  let down = null;
+  $('#res').addEventListener('pointerdown', e => { down = [e.clientX, e.clientY]; });
+  $('#res').addEventListener('pointerup', e => {
+    const c = e.target.closest && e.target.closest('.rs[data-act]');
+    if (c && down && Math.hypot(e.clientX - down[0], e.clientY - down[1]) < 8 && UI.started) { $('#side').classList.remove('collapsed'); setTab('market'); }
+    down = null;
+  });
+}
 const pts = new Map();
 let gesture = null, pinch = null;
 stage.addEventListener('pointerdown', e => {
@@ -2924,6 +3015,33 @@ function techPanel() {
   return h;
 }
 
+// the world market: sell surplus for cash, buy what runs short
+function marketPanel() {
+  const m = me(); if (m < 0) return '<p class="note">Observing.</p>';
+  const n = nat(m), g = G(), fee = S.mktFee(m), auto = n.auto || {};
+  let h = `<div class="hd"><h3>Market</h3><small>fee ${Math.round(fee * 100)}%</small></div>`;
+  h += `<p class="note">Every nation trades here. Selling pushes a price down and buying pushes it up, and prices drift back over a few minutes, so sell in steps. ${fee > 0.06 ? 'A trade pact with any nation halves the fee.' : 'Your trade pact halves the fee.'}</p>`;
+  h += `<div class="kvs"><div class="kv"><span>Cash</span><b>$${Math.floor(n.cash)}</b></div><div class="kv"><span>Net from trade</span><b class="${(n.mktNet || 0) >= 0 ? 'up' : 'down'}">${(n.mktNet || 0) >= 0 ? '+' : '-'}$${Math.abs(Math.round(n.mktNet || 0))}</b></div></div>`;
+  for (const k of S.MKT_RES) {
+    const p = S.mktPrice(k), prev = S.MKT_BASE[k] * g.mkt.prev[k];
+    const tr = p > prev * 1.03 ? ' <span class="up">\u25b2</span>' : p < prev * 0.97 ? ' <span class="down">\u25bc</span>' : '';
+    h += `<div class="mrow"><div class="mtop"><b>${S.RESN[k].n}</b><span class="mono">${Math.floor(n[k])} <em class="${n.rate[k] >= 0 ? 'up' : 'down'}">${sgn(n.rate[k])}/s</em></span></div>`;
+    h += `<div class="sub mono">sell $${f2(p * (1 - fee))} \u00b7 buy $${f2(p * (1 + fee))} each${tr} \u00b7 ${Math.round(100 * g.mkt.idx[k])}% of normal</div><div class="btns">`;
+    for (const q of [50, 250]) {
+      const qt = S.mktQuote(m, k, -q), ok = n[k] >= q && qt.cash >= 0.5;
+      h += `<button class="btn${ok ? '' : ' dim'}" ${ok ? `data-act="trade" data-k="${k}" data-x="${-q}"` : 'disabled'}>Sell ${q}<small>+$${Math.round(qt.cash)}</small></button>`;
+    }
+    for (const q of [50, 250]) {
+      const qt = S.mktQuote(m, k, q), ok = n.cash >= qt.cash;
+      h += `<button class="btn${ok ? '' : ' dim'}" ${ok ? `data-act="trade" data-k="${k}" data-x="${q}"` : 'disabled'}>Buy ${q}<small>-$${Math.round(qt.cash)}</small></button>`;
+    }
+    const cur = auto[k] || 0, i = S.AUTO_STEPS.indexOf(cur), nx = S.AUTO_STEPS[(i + 1) % S.AUTO_STEPS.length];
+    h += `<button class="btn" data-act="autosell" data-k="${k}" data-x="${nx}">Auto-sell<small>${cur ? 'above ' + cur : 'off'}</small></button></div></div>`;
+  }
+  h += '<p class="note">Auto-sell sells anything above the level you pick every few seconds, also while you are away. Tap it to step through off, 250, 500, 1000 and 2500.</p>';
+  return h;
+}
+
 function dipDetail(o) {
   const m = me(), g = G(), their = S.opinion(o.id, m), mine = S.opinion(m, o.id);
   let h = `<div style="padding:8px 0 4px;border-bottom:1px solid var(--line)">`;
@@ -3014,6 +3132,7 @@ function renderPanel() {
   else if (UI.tab === 'forces') h = forcesPanel();
   else if (UI.tab === 'dip') h = dipPanel();
   else if (UI.tab === 'tech') h = techPanel();
+  else if (UI.tab === 'market') h = marketPanel();
   else h = intelPanel();
   el.innerHTML = h;
   el.scrollTop = sc;
@@ -3036,6 +3155,8 @@ function panelSig() {
     }
   } else if (UI.tab === 'forces') {
     s += g.armies.filter(a => a.owner === m).map(a => a.id + ':' + (a.at != null ? a.at : '>' + a.mv.to) + ':' + Math.round(S.unitCount(a.u))).join(',') + '|' + g.provs.filter(p => p.owner === m).map(p => p.q.length).join('');
+  } else if (UI.tab === 'market') {
+    if (n) s += '|' + S.MKT_RES.map(k => [Math.floor(n[k] / 10), Math.round(S.mktPrice(k) * 100), (n.auto || {})[k] || 0].join(':')).join(',') + '|' + Math.floor(n.cash / 10) + '|' + S.mktFee(m);
   } else if (UI.tab === 'tech') {
     if (n) s += '|' + Object.keys(n.tech).join(',') + '|' + (n.rs ? n.rs.k : '') + '|' + f2(n.rate.rp);
   } else if (UI.tab === 'dip') {
@@ -3093,9 +3214,10 @@ function renderHeader() {
   $('#clock').textContent = clockText() + (n ? ` \u00b7 ${S.D.owned[m].length} provinces` : '');
   if (!n) { $('#res').innerHTML = `<span class="rs"><small>${g.nations.filter(x => x.alive).length} nations alive</small></span>`; return; }
   const r = n.rate;
-  const chip = (lab, val, rate) => `<span class="rs"><small>${lab}</small><b>${Math.floor(val)}</b><em class="${rate >= 0 ? 'up' : 'down'}">${sgn(rate)}</em></span>`;
+  const chip = (lab, val, rate) => `<span class="rs"${lab === 'Cash' || lab === 'Research' ? '' : ' data-act="mkt"'}><small>${lab}</small><b>${Math.floor(val)}</b><em class="${rate >= 0 ? 'up' : 'down'}">${sgn(rate)}</em></span>`;
   const units = S.D.armiesBy[m].reduce((s, a) => s + S.unitCount(a.u), 0);
-  $('#res').innerHTML = chip('Cash', n.cash, r.net) + S.RES.filter(k => k !== 'cash').map(k => chip(S.RESN[k].s, n[k], r[k])).join('') + chip('Research', n.rp, r.rp) + `<span class="rs"><small>Army</small><b>${Math.round(units)}</b></span>`;
+  const resH = chip('Cash', n.cash, r.net) + S.RES.filter(k => k !== 'cash').map(k => chip(S.RESN[k].s, n[k], r[k])).join('') + chip('Research', n.rp, r.rp) + `<span class="rs"><small>Army</small><b>${Math.round(units)}</b></span>`;
+  if (resH !== UI.resH) { $('#res').innerHTML = resH; UI.resH = resH; }
   const pend = g.proposals.filter(p => p.to === m).length, bd = $('#dipBadge');
   bd.hidden = !pend; bd.textContent = pend;
 }
@@ -3232,6 +3354,8 @@ document.addEventListener('click', e => {
     case 'continue': if (!loadSaved()) toast('No save found', 'bad'); break;
     case 'recruit': { const r = S.cmdRecruit(m, +d.p, d.t); toast(r.msg, r.ok ? 'ok' : 'bad'); dirty(); break; }
     case 'build': { const r = S.cmdBuild(m, +d.p, d.k); toast(r.msg, r.ok ? 'ok' : 'bad'); dirty(); break; }
+    case 'trade': { const r = S.cmdTrade(m, d.k, +d.x); toast(r.msg, r.ok ? 'ok' : 'bad'); UI.touch = 0; dirty(); break; }
+    case 'autosell': { const r = S.cmdAutoSell(m, d.k, +d.x); toast(r.msg, r.ok ? 'ok' : 'bad'); UI.touch = 0; dirty(); break; }
     case 'research': { const r = S.cmdResearch(m, d.k); toast(r.msg, r.ok ? 'ok' : 'bad'); dirty(); break; }
     case 'cancelresearch': { const r = S.cmdCancelResearch(m); toast(r.msg, r.ok ? 'ok' : 'bad'); dirty(); break; }
     case 'cancelbuild': { const r = S.cmdCancelBuild(m, +d.p); toast(r.msg, r.ok ? 'ok' : 'bad'); dirty(); break; }

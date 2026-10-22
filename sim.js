@@ -453,6 +453,75 @@ function econTick(dt) {
 }
 const canPay = (n, c) => RES.every(k => !c[k] || n[k] >= c[k]);
 const pay = (n, c) => { for (const k of RES) if (c[k]) n[k] -= c[k]; };
+
+// ---------------------------------------------------------------- market
+// One world market where every nation sells surplus for cash and buys what it lacks. Each resource has a
+// base price; a price index (G.mkt.idx) falls as nations sell and rises as they buy, by a factor of e for
+// every MKT_DEPTH units, and drifts back towards 1. Each trade pays a fee, halved with any trade pact.
+const MKT_RES = ['man', 'sup', 'comp', 'fuel', 'elec', 'rare'];
+const MKT_BASE = { man: 0.8, sup: 0.6, comp: 1.5, fuel: 1.3, elec: 1.7, rare: 1.9 };
+const MKT_DEPTH = 800;
+const MKT_MIN = 0.3, MKT_MAX = 3;
+const AUTO_STEPS = [0, 250, 500, 1000, 2500];     // auto-sell thresholds the player can pick (0 = off)
+const newMkt = () => ({ idx: Object.fromEntries(MKT_RES.map(k => [k, 1])), prev: Object.fromEntries(MKT_RES.map(k => [k, 1])) });
+const mktFee = nat => G.treaties.some(t => t.type === 'trade' && (t.a === nat || t.b === nat)) ? 0.05 : 0.1;
+const mktPrice = k => MKT_BASE[k] * G.mkt.idx[k];
+// what q units would cost (q > 0, buying) or fetch (q < 0, selling), walking the price as the trade fills
+function mktQuote(nat, k, q) {
+  const i0 = G.mkt.idx[k], fee = mktFee(nat);
+  if (q > 0) {
+    const i1 = Math.min(MKT_MAX, i0 * Math.exp(q / MKT_DEPTH));
+    return { cash: MKT_BASE[k] * MKT_DEPTH * (i1 - i0) * (1 + fee), idx: i1, fee };
+  }
+  const i1 = Math.max(MKT_MIN, i0 * Math.exp(q / MKT_DEPTH));
+  return { cash: MKT_BASE[k] * MKT_DEPTH * (i0 - i1) * (1 - fee), idx: i1, fee };
+}
+function cmdTrade(nat, k, q) {
+  const n = G.nations[nat];
+  if (!n || !MKT_BASE[k] || !q) return { ok: false, msg: 'Nothing to trade' };
+  if (q < 0 && n[k] < -q - 1e-9) return { ok: false, msg: `Not enough ${RESN[k].n.toLowerCase()}` };
+  const qt = mktQuote(nat, k, q);
+  if (q > 0 && n.cash < qt.cash) return { ok: false, msg: 'Not enough cash' };
+  if (q < 0 && qt.cash < 0.5) return { ok: false, msg: 'Nobody is buying at this price' };
+  n[k] += q; n.cash += q > 0 ? -qt.cash : qt.cash; G.mkt.idx[k] = qt.idx;
+  n.mktNet = (n.mktNet || 0) + (q > 0 ? -qt.cash : qt.cash);
+  return { ok: true, msg: `${q > 0 ? 'Bought' : 'Sold'} ${Math.abs(Math.round(q))} ${RESN[k].n.toLowerCase()} for $${Math.round(qt.cash)}`, cash: qt.cash };
+}
+// prices drift back to normal with a little noise; the player's auto-sell runs every 10 seconds
+function mktTick() {
+  for (const k of MKT_RES) {
+    let i = G.mkt.idx[k];
+    i += (1 - i) * 0.004 + i * rnd(-0.004, 0.004);
+    G.mkt.idx[k] = clamp(i, MKT_MIN, MKT_MAX);
+  }
+  if (Math.floor(G.t) % 60 === 0) G.mkt.prev = Object.assign({}, G.mkt.idx);
+  if (Math.floor(G.t) % 10 === 0) for (const n of G.nations) {
+    if (!n.alive || !n.auto) continue;
+    for (const k of MKT_RES) {
+      const cap = n.auto[k];
+      if (cap && n[k] > cap + 5 && G.mkt.idx[k] > MKT_MIN * 1.2) cmdTrade(n.id, k, -Math.min(n[k] - cap, 150));
+    }
+  }
+}
+function cmdAutoSell(nat, k, cap) {
+  const n = G.nations[nat];
+  if (!MKT_BASE[k]) return { ok: false, msg: 'Unknown resource' };
+  n.auto = n.auto || {};
+  n.auto[k] = cap || 0;
+  return { ok: true, msg: cap ? `Selling ${RESN[k].n.toLowerCase()} above ${cap}` : `Auto-sell for ${RESN[k].n.toLowerCase()} off` };
+}
+// computer nations sell what piles up and buy what runs short
+function aiMarket(n) {
+  const P = pers(n);
+  for (const k of MKT_RES) {
+    const keep = k === 'man' ? 250 : 300, idx = G.mkt.idx[k];
+    if (n[k] > keep && (idx > 0.55 || (n.cash < 60 && idx > MKT_MIN * 1.1))) {
+      cmdTrade(n.id, k, -Math.min((n[k] - keep) * 0.3, 80));
+    } else if (n[k] < 30 && n.cash > P.reserve * 1.5 && idx < 1.6) {
+      cmdTrade(n.id, k, 40);
+    }
+  }
+}
 const unitCost = t => UNITS[t].cost;
 const scaleCost = (c, f) => { const o = {}; for (const k in c) o[k] = Math.round(c[k] * f); return o; };
 const buildCost = (kind, lvl) => scaleCost(BLD[kind].cost, lvl + 1);
@@ -1774,6 +1843,7 @@ function aiThink(n) {
   aiNavy(n);
   aiMissiles(n);
   aiResearch(n);
+  aiMarket(n);
   n.ai.cycle = (n.ai.cycle || 0) + 1;
   opMemo = null;
   if (n.ai.cycle % 4 === 0) { aiDiplomacy(n); aiWar(n); }
@@ -1862,6 +1932,7 @@ function secondTick() {
   processBattles();
   resumeMarches();
   unrestTick();
+  mktTick();
   // treaties expire
   for (const t of G.treaties.slice()) if (t.exp && t.exp <= G.t) {
     G.treaties.splice(G.treaties.indexOf(t), 1);
@@ -1906,7 +1977,7 @@ function newGame(opts) {
   // pace: game seconds per real second at 1x speed (UI only); away: the world keeps running while the tab is closed
   opts = Object.assign({ player: 0, diff: 'normal', pace: 1, away: false }, opts || {});
   G = { v: SAVE_V, t: 0, acc1: 0, opts, nations: [], provs: [], armies: [], nextArmy: 1, wars: {}, treaties: [], nextTid: 1,
-        memory: [], proposals: [], nextProp: 1, log: [], seq: 0, flags: {}, grace: 240, wstat: {}, stats: {} };
+        memory: [], proposals: [], nextProp: 1, log: [], seq: 0, flags: {}, grace: 240, wstat: {}, stats: {}, mkt: newMkt() };
   NATIONS.forEach((def, i) => G.nations.push(Object.assign({
     id: i, name: def.name, short: def.short, color: def.color, pers: def.pers, player: i === opts.player, alive: true,
     capital: mainOf(def.cap), infamy: 0, rate: zeroRate(),
@@ -1947,6 +2018,7 @@ function load(str) {
   for (const a of G.armies) if (a.since === undefined) a.since = a.mv ? null : G.t;
   if (!G.opts.pace) G.opts.pace = 1;
   if (!G.stats) G.stats = {};
+  if (!G.mkt) G.mkt = newMkt();
   for (const n of G.nations) { if (!n.tech) n.tech = {}; if (n.rs === undefined) n.rs = null; calcMods(n); }
   refresh(); computeRates(); return G;
 }
@@ -1966,6 +2038,7 @@ return {
   atWar, allied, hasTreaty, hasAccess, truceLeft, opinion, canEnter, borders,
   unitPow, unitCount, armySpeed, routeTime, findRoute, nodeRoute, nearestNode, nodeIn, NODES, NODE_P, NODES_OF, ROADS: MAPD.roads, predictAttack, defBonus, maxGar,
   buildCost, buildTime, unitCost, canPay, provRates, canTrain, trainTime,
+  MKT_RES, MKT_BASE, AUTO_STEPS, mktPrice, mktQuote, mktFee, cmdTrade, cmdAutoSell,
   cmdRecruit, cmdBuild, cmdCancelBuild, cmdMove, cmdStop, cmdSplit, cmdMerge, cmdDisband,
   diplo, answerProposal, caretaker, evalProposal, warStat, enemiesOf, alliesOf, pers,
 };

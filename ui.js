@@ -180,6 +180,16 @@ function focusNation(id) {
 
 const stage = $('#stage');
 $('#sheet').addEventListener('pointerdown', () => { UI.touch = performance.now(); });
+// a tap on a resource in the top bar opens the market (handled on the bar, since its chips are redrawn often)
+{
+  let down = null;
+  $('#res').addEventListener('pointerdown', e => { down = [e.clientX, e.clientY]; });
+  $('#res').addEventListener('pointerup', e => {
+    const c = e.target.closest && e.target.closest('.rs[data-act]');
+    if (c && down && Math.hypot(e.clientX - down[0], e.clientY - down[1]) < 8 && UI.started) { $('#side').classList.remove('collapsed'); setTab('market'); }
+    down = null;
+  });
+}
 const pts = new Map();
 let gesture = null, pinch = null;
 stage.addEventListener('pointerdown', e => {
@@ -724,6 +734,33 @@ function techPanel() {
   return h;
 }
 
+// the world market: sell surplus for cash, buy what runs short
+function marketPanel() {
+  const m = me(); if (m < 0) return '<p class="note">Observing.</p>';
+  const n = nat(m), g = G(), fee = S.mktFee(m), auto = n.auto || {};
+  let h = `<div class="hd"><h3>Market</h3><small>fee ${Math.round(fee * 100)}%</small></div>`;
+  h += `<p class="note">Every nation trades here. Selling pushes a price down and buying pushes it up, and prices drift back over a few minutes, so sell in steps. ${fee > 0.06 ? 'A trade pact with any nation halves the fee.' : 'Your trade pact halves the fee.'}</p>`;
+  h += `<div class="kvs"><div class="kv"><span>Cash</span><b>$${Math.floor(n.cash)}</b></div><div class="kv"><span>Net from trade</span><b class="${(n.mktNet || 0) >= 0 ? 'up' : 'down'}">${(n.mktNet || 0) >= 0 ? '+' : '-'}$${Math.abs(Math.round(n.mktNet || 0))}</b></div></div>`;
+  for (const k of S.MKT_RES) {
+    const p = S.mktPrice(k), prev = S.MKT_BASE[k] * g.mkt.prev[k];
+    const tr = p > prev * 1.03 ? ' <span class="up">\u25b2</span>' : p < prev * 0.97 ? ' <span class="down">\u25bc</span>' : '';
+    h += `<div class="mrow"><div class="mtop"><b>${S.RESN[k].n}</b><span class="mono">${Math.floor(n[k])} <em class="${n.rate[k] >= 0 ? 'up' : 'down'}">${sgn(n.rate[k])}/s</em></span></div>`;
+    h += `<div class="sub mono">sell $${f2(p * (1 - fee))} \u00b7 buy $${f2(p * (1 + fee))} each${tr} \u00b7 ${Math.round(100 * g.mkt.idx[k])}% of normal</div><div class="btns">`;
+    for (const q of [50, 250]) {
+      const qt = S.mktQuote(m, k, -q), ok = n[k] >= q && qt.cash >= 0.5;
+      h += `<button class="btn${ok ? '' : ' dim'}" ${ok ? `data-act="trade" data-k="${k}" data-x="${-q}"` : 'disabled'}>Sell ${q}<small>+$${Math.round(qt.cash)}</small></button>`;
+    }
+    for (const q of [50, 250]) {
+      const qt = S.mktQuote(m, k, q), ok = n.cash >= qt.cash;
+      h += `<button class="btn${ok ? '' : ' dim'}" ${ok ? `data-act="trade" data-k="${k}" data-x="${q}"` : 'disabled'}>Buy ${q}<small>-$${Math.round(qt.cash)}</small></button>`;
+    }
+    const cur = auto[k] || 0, i = S.AUTO_STEPS.indexOf(cur), nx = S.AUTO_STEPS[(i + 1) % S.AUTO_STEPS.length];
+    h += `<button class="btn" data-act="autosell" data-k="${k}" data-x="${nx}">Auto-sell<small>${cur ? 'above ' + cur : 'off'}</small></button></div></div>`;
+  }
+  h += '<p class="note">Auto-sell sells anything above the level you pick every few seconds, also while you are away. Tap it to step through off, 250, 500, 1000 and 2500.</p>';
+  return h;
+}
+
 function dipDetail(o) {
   const m = me(), g = G(), their = S.opinion(o.id, m), mine = S.opinion(m, o.id);
   let h = `<div style="padding:8px 0 4px;border-bottom:1px solid var(--line)">`;
@@ -814,6 +851,7 @@ function renderPanel() {
   else if (UI.tab === 'forces') h = forcesPanel();
   else if (UI.tab === 'dip') h = dipPanel();
   else if (UI.tab === 'tech') h = techPanel();
+  else if (UI.tab === 'market') h = marketPanel();
   else h = intelPanel();
   el.innerHTML = h;
   el.scrollTop = sc;
@@ -836,6 +874,8 @@ function panelSig() {
     }
   } else if (UI.tab === 'forces') {
     s += g.armies.filter(a => a.owner === m).map(a => a.id + ':' + (a.at != null ? a.at : '>' + a.mv.to) + ':' + Math.round(S.unitCount(a.u))).join(',') + '|' + g.provs.filter(p => p.owner === m).map(p => p.q.length).join('');
+  } else if (UI.tab === 'market') {
+    if (n) s += '|' + S.MKT_RES.map(k => [Math.floor(n[k] / 10), Math.round(S.mktPrice(k) * 100), (n.auto || {})[k] || 0].join(':')).join(',') + '|' + Math.floor(n.cash / 10) + '|' + S.mktFee(m);
   } else if (UI.tab === 'tech') {
     if (n) s += '|' + Object.keys(n.tech).join(',') + '|' + (n.rs ? n.rs.k : '') + '|' + f2(n.rate.rp);
   } else if (UI.tab === 'dip') {
@@ -893,9 +933,10 @@ function renderHeader() {
   $('#clock').textContent = clockText() + (n ? ` \u00b7 ${S.D.owned[m].length} provinces` : '');
   if (!n) { $('#res').innerHTML = `<span class="rs"><small>${g.nations.filter(x => x.alive).length} nations alive</small></span>`; return; }
   const r = n.rate;
-  const chip = (lab, val, rate) => `<span class="rs"><small>${lab}</small><b>${Math.floor(val)}</b><em class="${rate >= 0 ? 'up' : 'down'}">${sgn(rate)}</em></span>`;
+  const chip = (lab, val, rate) => `<span class="rs"${lab === 'Cash' || lab === 'Research' ? '' : ' data-act="mkt"'}><small>${lab}</small><b>${Math.floor(val)}</b><em class="${rate >= 0 ? 'up' : 'down'}">${sgn(rate)}</em></span>`;
   const units = S.D.armiesBy[m].reduce((s, a) => s + S.unitCount(a.u), 0);
-  $('#res').innerHTML = chip('Cash', n.cash, r.net) + S.RES.filter(k => k !== 'cash').map(k => chip(S.RESN[k].s, n[k], r[k])).join('') + chip('Research', n.rp, r.rp) + `<span class="rs"><small>Army</small><b>${Math.round(units)}</b></span>`;
+  const resH = chip('Cash', n.cash, r.net) + S.RES.filter(k => k !== 'cash').map(k => chip(S.RESN[k].s, n[k], r[k])).join('') + chip('Research', n.rp, r.rp) + `<span class="rs"><small>Army</small><b>${Math.round(units)}</b></span>`;
+  if (resH !== UI.resH) { $('#res').innerHTML = resH; UI.resH = resH; }
   const pend = g.proposals.filter(p => p.to === m).length, bd = $('#dipBadge');
   bd.hidden = !pend; bd.textContent = pend;
 }
@@ -1032,6 +1073,8 @@ document.addEventListener('click', e => {
     case 'continue': if (!loadSaved()) toast('No save found', 'bad'); break;
     case 'recruit': { const r = S.cmdRecruit(m, +d.p, d.t); toast(r.msg, r.ok ? 'ok' : 'bad'); dirty(); break; }
     case 'build': { const r = S.cmdBuild(m, +d.p, d.k); toast(r.msg, r.ok ? 'ok' : 'bad'); dirty(); break; }
+    case 'trade': { const r = S.cmdTrade(m, d.k, +d.x); toast(r.msg, r.ok ? 'ok' : 'bad'); UI.touch = 0; dirty(); break; }
+    case 'autosell': { const r = S.cmdAutoSell(m, d.k, +d.x); toast(r.msg, r.ok ? 'ok' : 'bad'); UI.touch = 0; dirty(); break; }
     case 'research': { const r = S.cmdResearch(m, d.k); toast(r.msg, r.ok ? 'ok' : 'bad'); dirty(); break; }
     case 'cancelresearch': { const r = S.cmdCancelResearch(m); toast(r.msg, r.ok ? 'ok' : 'bad'); dirty(); break; }
     case 'cancelbuild': { const r = S.cmdCancelBuild(m, +d.p); toast(r.msg, r.ok ? 'ok' : 'bad'); dirty(); break; }

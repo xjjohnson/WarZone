@@ -101,10 +101,10 @@ b, strong { font-weight: 600; }
 .toast.capture { border-left-color: var(--hot); } .toast.proposal { border-left-color: #4C8DF2; } .toast.elim, .toast.revolt { border-left-color: #9B7DE8; }
 
 #side { display: flex; flex-direction: column; min-height: 0; max-height: 42vh; border-top: 2px solid var(--ink); background: var(--paper); }
-#side[data-tab="forces"], #side[data-tab="dip"], #side[data-tab="intel"] { max-height: 62vh; }
+#side[data-tab="forces"], #side[data-tab="dip"], #side[data-tab="intel"], #side[data-tab="market"] { max-height: 62vh; }
 #side.collapsed #sheet { display: none; }
 #sheet { overflow-y: auto; overscroll-behavior: contain; padding: 10px var(--gr) 12px var(--gl); flex: 1; min-height: 0; }
-#tabs { display: grid; grid-template-columns: repeat(5, 1fr); border-top: 1px solid var(--line); background: var(--paper2); padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
+#tabs { display: grid; grid-template-columns: repeat(6, 1fr); border-top: 1px solid var(--line); background: var(--paper2); padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
 #tabs button { background: none; border: 0; border-top: 3px solid transparent; padding: 8px 4px 9px; font: 800 15px var(--display); letter-spacing: .09em; text-transform: uppercase; color: var(--ink2); cursor: pointer; position: relative; min-height: 40px; }
 #tabs button[aria-selected="true"] { color: var(--ink); border-top-color: var(--ink); background: var(--paper); }
 #tabs .badge { position: absolute; top: 3px; right: 4px; min-width: 17px; height: 17px; border-radius: 9px; background: var(--warn); color: #fff; font: 700 11px/17px var(--mono); text-align: center; padding: 0 4px; }
@@ -112,7 +112,14 @@ b, strong { font-weight: 600; }
 h3 { margin: 0; font: 800 22px/1 var(--display); letter-spacing: .05em; text-transform: uppercase; }
 h4 { margin: 14px 0 6px; font: 600 10.5px var(--body); letter-spacing: .14em; text-transform: uppercase; color: var(--ink2); }
 h4:first-child { margin-top: 0; }
-@media (max-width: 480px) { #tabs button { font-size: 13px; letter-spacing: .03em; padding-left: 2px; padding-right: 2px; } }
+#tabs .ts { display: none; }
+@media (max-width: 480px) { #tabs button { font-size: 13px; letter-spacing: .03em; padding-left: 2px; padding-right: 2px; } #tabs .tl { display: none; } #tabs .ts { display: inline; } }
+.mrow { padding: 8px 0 2px; border-bottom: 1px solid var(--line); }
+.mtop { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.mtop em { font-style: normal; font-size: 11px; }
+.mrow .sub { color: var(--ink2); font-size: 12px; margin-top: 2px; }
+.mrow .btns .btn { padding: 5px 8px; min-height: 34px; }
+#res .rs[data-act] { cursor: pointer; }
 .btn.tech.done { border-color: var(--good); }
 .cat { margin: 8px 0 2px; font: 600 10px var(--body); letter-spacing: .1em; text-transform: uppercase; color: var(--ink3, var(--ink2)); }
 .hd { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; flex-wrap: wrap; }
@@ -216,8 +223,9 @@ details p { margin: 4px 0 8px; color: var(--ink2); }
     <nav id="tabs" role="tablist">
       <button role="tab" data-act="tab" data-v="map" aria-selected="true">Map</button>
       <button role="tab" data-act="tab" data-v="forces" aria-selected="false">Forces</button>
-      <button role="tab" data-act="tab" data-v="dip" aria-selected="false">Diplomacy<span class="badge" id="dipBadge" hidden></span></button>
+      <button role="tab" data-act="tab" data-v="dip" aria-selected="false"><span class="tl">Diplomacy</span><span class="ts">Diplo</span><span class="badge" id="dipBadge" hidden></span></button>
       <button role="tab" data-act="tab" data-v="tech" aria-selected="false">Tech</button>
+      <button role="tab" data-act="tab" data-v="market" aria-selected="false">Market</button>
       <button role="tab" data-act="tab" data-v="intel" aria-selected="false">Intel</button>
     </nav>
   </aside>

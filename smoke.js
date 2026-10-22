@@ -33,7 +33,7 @@ const click = sel => { const el = d.querySelector(sel); if (!el) throw new Error
   if (d.querySelector('[data-act="recruit"][data-t="pb"]')) { click('[data-act="recruit"][data-t="pb"]'); await sleep(50); }
   console.log('categories:', [...d.querySelectorAll('#sheet .cat')].map(e => e.textContent).join(','), 'queue now:', S.G.provs[UI.selP].q.map(q => q.type).join(','));
   // tabs
-  for (const t of ['forces', 'dip', 'tech', 'intel', 'map']) { click(`[data-act="tab"][data-v="${t}"]`); await sleep(350); console.log('tab', t, 'len', d.getElementById('sheet').innerHTML.length); }
+  for (const t of ['forces', 'dip', 'tech', 'market', 'intel', 'map']) { click(`[data-act="tab"][data-v="${t}"]`); await sleep(350); console.log('tab', t, 'len', d.getElementById('sheet').innerHTML.length); }
   // research: start a project from the Tech tab, then cancel and restart it
   click('[data-act="tab"][data-v="tech"]'); await sleep(350);
   click('[data-act="research"][data-k="ind1"]'); await sleep(350);
@@ -55,7 +55,7 @@ const click = sel => { const el = d.querySelector(sel); if (!el) throw new Error
   for (let i = 0; i < 6 * 60 * 4; i++) { S.step(0.25); if (i % 120 === 0) await sleep(30); }
   await sleep(500);
   console.log('after sim: clock', d.getElementById('clock').textContent, 'badges', d.querySelectorAll('.bdg').length, 'armies', S.G.armies.length, 'toasts', d.querySelectorAll('.toast').length);
-  for (const t of ['forces', 'dip', 'tech', 'intel', 'map']) { click(`[data-act="tab"][data-v="${t}"]`); await sleep(350); }
+  for (const t of ['forces', 'dip', 'tech', 'market', 'intel', 'map']) { click(`[data-act="tab"][data-v="${t}"]`); await sleep(350); }
   // declare war flow + proposal handling
   click('[data-act="tab"][data-v="dip"]'); await sleep(350);
   const foe = S.G.nations.find(n => n.alive && n.id !== 2 && n.id !== nOwner && !S.atWar(2, n.id) && !S.allied(2, n.id));
@@ -80,6 +80,14 @@ const click = sel => { const el = d.querySelector(sel); if (!el) throw new Error
     console.log('missile card:', d.getElementById('sheet').textContent.replace(/\s+/g, ' ').slice(0, 200));
     if (tgt !== undefined) { console.log('launch:', S.cmdMove(sal.id, tgt).msg); for (let i = 0; i < 20 * 4; i++) S.step(0.25); console.log('salvo left:', g.armies.includes(sal), 'missiles hit', Math.round(g.stats.msl || 0)); }
   } else console.log('no salvo (capital may have fallen)');
+  // market: sell and buy through the panel, and switch on auto-sell
+  click('[data-act="tab"][data-v="market"]'); await sleep(350);
+  { const pn = S.G.nations[2], c0 = pn.cash, s0 = pn.sup;
+    click('[data-act="trade"][data-k="sup"][data-x="-50"]'); await sleep(100);
+    console.log('market sell: sup', Math.round(s0), '->', Math.round(pn.sup), 'cash', Math.round(c0), '->', Math.round(pn.cash));
+    const c1 = pn.cash; click('[data-act="trade"][data-k="fuel"][data-x="50"]'); await sleep(100);
+    console.log('market buy fuel: cash', Math.round(c1), '->', Math.round(pn.cash), 'idx', S.G.mkt.idx.fuel.toFixed(2));
+    click('[data-act="autosell"][data-k="man"]'); await sleep(100); console.log('auto', JSON.stringify(pn.auto)); }
   for (let i = 0; i < 3 * 60 * 4; i++) S.step(0.25);
   await sleep(500);
   console.log('proposals', S.G.proposals.length, 'log', S.G.log.length);
