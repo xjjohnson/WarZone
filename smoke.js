@@ -44,7 +44,7 @@ const click = sel => { const el = d.querySelector(sel); if (!el) throw new Error
   // run game time at speed: 6 game minutes
   for (let i = 0; i < 6 * 60 * 4; i++) { S.step(0.25); if (i % 120 === 0) await sleep(30); }
   await sleep(500);
-  console.log('after sim: day', Math.floor(S.G.t / 2), 'badges', d.querySelectorAll('.bdg').length, 'armies', S.G.armies.length, 'toasts', d.querySelectorAll('.toast').length);
+  console.log('after sim: clock', d.getElementById('clock').textContent, 'badges', d.querySelectorAll('.bdg').length, 'armies', S.G.armies.length, 'toasts', d.querySelectorAll('.toast').length);
   for (const t of ['forces', 'dip', 'intel', 'map']) { click(`[data-act="tab"][data-v="${t}"]`); await sleep(350); }
   // declare war flow + proposal handling
   click('[data-act="tab"][data-v="dip"]'); await sleep(350);
@@ -59,6 +59,9 @@ const click = sel => { const el = d.querySelector(sel); if (!el) throw new Error
   for (let i = 0; i < 3 * 60 * 4; i++) S.step(0.25);
   await sleep(500);
   console.log('proposals', S.G.proposals.length, 'log', S.G.log.length);
+  // an idle player can be overrun by now: dismiss the Fallen or Dominance modal
+  const dismiss = d.querySelector('#modal:not([hidden]) [data-act="watch"], #modal:not([hidden]) [data-act="keep"]');
+  if (dismiss) { console.log('dismissing modal:', dismiss.dataset.act); dismiss.dispatchEvent(new w.MouseEvent('click', { bubbles: true })); await sleep(100); }
   click('[data-act="tab"][data-v="intel"]'); await sleep(350); click('[data-act="save"]');
   console.log('saved bytes', (w.localStorage.getItem('frontline_usa_save_v1') || '').length);
   console.log(errors.length ? 'ERRORS:\n' + errors.join('\n') : 'NO ERRORS');

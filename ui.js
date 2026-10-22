@@ -12,6 +12,26 @@ const G = () => S.G;
 const me = () => G().opts.player;
 const nat = id => G().nations[id];
 const army = id => G().armies.find(a => a.id === id);
+// Game pace: game seconds per real second at 1x. The simulation is tuned in game seconds;
+// the pace only decides how long that takes in real life.
+const PACES = [
+  { k: 'blitz', n: 'Blitz', v: 1, hint: 'Fast. A war plays out in minutes.' },
+  { k: 'quick', n: 'Quick', v: 1 / 6, hint: 'An evening. Armies cross a state in about half a minute.' },
+  { k: 'long', n: 'Long', v: 1 / 24, hint: 'A campaign of days. Check in a few times a day.' },
+  { k: 'epic', n: 'Epic', v: 1 / 72, hint: 'A campaign of a week or more. Training takes hours.' },
+];
+const pace = () => (G() && G().opts.pace) || 1;
+const paceOf = v => PACES.reduce((b, p) => Math.abs(Math.log(p.v / v)) < Math.abs(Math.log(b.v / v)) ? p : b, PACES[0]);
+const MAX_AWAY = 90 * 60;      // at most this many game seconds are simulated while the player is away
+// game seconds -> real-time text at 1x speed
+function fmtDur(gs) {
+  const s = Math.max(0, gs / pace());
+  if (s < 90) return Math.ceil(s) + 's';
+  if (s < 5400) return Math.round(s / 60) + 'm';
+  const h = s / 3600;
+  if (h < 48) { const hh = Math.floor(h), mm = Math.round((h - hh) * 60); return hh + 'h' + (mm ? ' ' + String(mm).padStart(2, '0') + 'm' : ''); }
+  return Math.floor(h / 24) + 'd ' + Math.round(h % 24) + 'h';
+}
 
 const UI = {
   tab: 'map', selP: null, selA: null, speed: 1, dipOpen: null, dipMsg: '', confirm: '', lastSeq: 0, started: false, modal: false,
@@ -174,7 +194,7 @@ function orderTo(pid) {
   if (!a || a.owner !== me()) { UI.selA = null; selectProv(pid); return; }
   if (pid === a.at && !a.mv) { UI.selA = null; selectProv(pid); return; }
   const r = S.cmdMove(a.id, pid);
-  toast(r.msg + (r.eta ? ` (ETA ${Math.ceil(r.eta)}s)` : ''), r.ok ? 'ok' : 'bad');
+  toast(r.msg + (r.eta ? ` (ETA ${fmtDur(r.eta)})` : ''), r.ok ? 'ok' : 'bad');
   UI.selP = pid; UI.confirm = ''; dirty();
 }
 
@@ -297,7 +317,7 @@ function statusTags(a, b) {
   if (S.hasTreaty(a, b, 'nap')) h += '<span class="tag">Pact</span> ';
   if (S.hasTreaty(a, b, 'access') && !S.allied(a, b)) h += '<span class="tag">Passage</span> ';
   const tl = S.truceLeft(a, b);
-  if (tl > 0) h += `<span class="tag hot">Truce ${Math.ceil(tl)}s</span> `;
+  if (tl > 0) h += `<span class="tag hot">Truce ${fmtDur(tl)}</span> `;
   return h;
 }
 function etaOf(a) {
@@ -318,7 +338,8 @@ function provCard(pid) {
     <div class="kv"><span>Population</span><b>${d.pop} M</b></div>
     <div class="kv"><span>Garrison</span><b data-bind="g:${pid}">${f1(p.garrison)}/${f1(S.maxGar(p))}</b></div>
     <div class="kv"><span>Defence</span><b>+${Math.round(S.defBonus(p) * 100)}%</b></div>
-    <div class="kv"><span>Fort / Infra</span><b>${p.fort} / ${p.infra}</b></div>
+    <div class="kv"><span>Capture time</span><b>${fmtDur(S.captureTime(p))}</b></div>
+    <div class="kv"><span>Buildings</span><b>${S.BK.map(k => `${S.BUILD[k].s} ${p[k] || 0}`).join(' · ')}</b></div>
     <div class="kv"><span>Unrest</span><b data-bind="un:${pid}">${Math.round(p.unrest * 100)}%</b><div class="bar ${p.unrest > 0.6 ? 'warn' : ''}"><i data-bar="un:${pid}" style="width:${Math.round(p.unrest * 100)}%"></i></div></div>
   </div>
   <div class="note">Produces ${f1(r.c)} cash, ${f1(r.s)} steel, ${f1(r.f)} fuel per second.</div>`;
@@ -326,14 +347,18 @@ function provCard(pid) {
     h += '<h4>Recruit here</h4><div class="btns">';
     for (const t of UT) {
       const c = S.unitCost(t), ok = S.canPay(n, c);
-      h += `<button class="btn ${ok ? '' : 'dim'}" data-act="recruit" data-p="${pid}" data-t="${t}">${UNITS[t].n}<small>${costStr(c)} &middot; ${UNITS[t].time}s</small></button>`;
+      h += `<button class="btn ${ok ? '' : 'dim'}" data-act="recruit" data-p="${pid}" data-t="${t}">${UNITS[t].n}<small>${costStr(c)} &middot; ${fmtDur(UNITS[t].time)}</small></button>`;
     }
     h += '</div>';
-    if (p.q.length) h += `<div class="note">Training: ${p.q.map((it, i) => `${UNITS[it.type].s} <span class="mono" data-bind="q:${pid}:${i}">${Math.ceil(it.left)}</span>s`).join(' &rarr; ')}</div>`;
-    h += '<h4>Build</h4><div class="btns">';
-    for (const [k, nm, eff, lvl] of [['fort', 'Fortify', '+25% defence, bigger garrison', p.fort], ['infra', 'Develop', '+25% output', p.infra]]) {
-      if (lvl >= S.MAXLVL) h += `<button class="btn dim" disabled>${nm}<small>Maximum level</small></button>`;
-      else { const c = S.buildCost(k, lvl), ok = S.canPay(n, c); h += `<button class="btn ${ok ? '' : 'dim'}" data-act="build" data-p="${pid}" data-k="${k}">${nm} to ${lvl + 1}<small>${costStr(c)}</small><small>${eff}</small></button>`; }
+    if (p.q.length) h += `<div class="note">Training: ${p.q.map((it, i) => `${UNITS[it.type].s} <span class="mono" data-bind="q:${pid}:${i}">${fmtDur(it.left)}</span>`).join(' &rarr; ')}</div>`;
+    h += '<h4>Build</h4>';
+    const bq = p.bq || [];
+    if (bq.length) h += `<div class="note">Constructing: ${bq.map((b, i) => `${S.BUILD[b.k].n} <span class="mono" data-bind="bq:${pid}:${i}">${fmtDur(b.left)}</span>`).join(' &rarr; ')}${p.battle || p.cap ? ' (paused while under attack)' : ''}</div><div class="bar"><i data-bar="bq:${pid}" style="width:${Math.round(100 * (1 - bq[0].left / bq[0].total))}%"></i></div>`;
+    h += '<div class="btns">';
+    for (const k of S.BK) {
+      const B = S.BUILD[k], lvl = S.plannedLvl(p, k);
+      if (lvl >= B.max) h += `<button class="btn dim" disabled>${B.n}<small>Maximum level (${B.max})</small></button>`;
+      else { const c = S.buildCost(k, lvl), ok = S.canPay(n, c); h += `<button class="btn ${ok ? '' : 'dim'}" data-act="build" data-p="${pid}" data-k="${k}">${B.verb} to ${lvl + 1}<small>${costStr(c)} &middot; ${fmtDur(S.buildTime(k, lvl))}</small><small>${B.desc}</small></button>`; }
     }
     h += '</div>';
   } else if (m >= 0) {
@@ -356,8 +381,10 @@ function armyCard(a) {
   let h = `<div class="hd">${dotOf(n)}<h3>Army ${a.id}</h3><small>${a.at != null ? 'at ' + PS[a.at].abbr : 'to ' + PS[a.mv.to].abbr}</small></div>`;
   h += '<div class="kvs">';
   for (const t of UT) if (a.u[t] >= 0.5) h += `<div class="kv"><span>${UNITS[t].n}</span><b data-bind="ac:${a.id}:${t}">${Math.round(a.u[t])}</b></div>`;
-  h += `<div class="kv"><span>Speed</span><b>${S.armySpeed(a)}</b></div></div>`;
-  if (a.mv || a.route.length) h += `<div class="note">Marching &middot; ETA <b class="mono" data-bind="eta:${a.id}">${Math.ceil(etaOf(a))}</b>s</div>`;
+  h += `<div class="kv"><span>Speed</span><b>${S.armySpeed(a)}</b></div>`;
+  if (a.at != null && (g.provs[a.at].owner === a.owner || S.allied(a.owner, g.provs[a.at].owner))) h += `<div class="kv"><span>Dug in</span><b>+${Math.round(S.entrench(a, g.provs[a.at]) * 100)}%</b></div>`;
+  h += '</div>';
+  if (a.mv || a.route.length) h += `<div class="note">Marching &middot; ETA <b class="mono" data-bind="eta:${a.id}">${fmtDur(etaOf(a))}</b></div>`;
   else if (g.provs[here].battle) h += '<div class="note down">Engaged in battle.</div>';
   else h += '<div class="note">Waiting for orders. Tap a state on the map to march.</div>';
   if (UI.selP != null && UI.selP !== here) {
@@ -411,7 +438,7 @@ function forcesPanel() {
   const q = g.provs.filter(p => p.owner === m && p.q.length);
   h += '<h4>Training</h4>';
   if (!q.length) h += '<p class="note">Nothing in training.</p>';
-  for (const p of q) h += `<div class="row" tabindex="0" data-act="selprov" data-p="${p.id}"><div class="grow"><div class="nm">${PS[p.id].name}</div><div class="sub">${p.q.map(it => UNITS[it.type].s).join(' &rarr; ')}</div></div><span class="num" data-bind="q:${p.id}:0">${Math.ceil(p.q[0].left)}</span></div>`;
+  for (const p of q) h += `<div class="row" tabindex="0" data-act="selprov" data-p="${p.id}"><div class="grow"><div class="nm">${PS[p.id].name}</div><div class="sub">${p.q.map(it => UNITS[it.type].s).join(' &rarr; ')}</div></div><span class="num" data-bind="q:${p.id}:0">${fmtDur(p.q[0].left)}</span></div>`;
   return h;
 }
 
@@ -426,8 +453,8 @@ function dipDetail(o) {
   if (S.atWar(m, o.id)) h += btn('ceasefire', 'Ask for ceasefire');
   else {
     if (!S.hasTreaty(m, o.id, 'trade')) h += btn('trade', 'Trade pact<small>+7% cash for both</small>');
-    if (!S.hasTreaty(m, o.id, 'nap') && !S.allied(m, o.id)) h += btn('nap', 'Non-aggression pact<small>6 min</small>');
-    if (!S.hasAccess(m, o.id)) h += btn('access', 'Passage rights<small>6 min, troops may cross</small>');
+    if (!S.hasTreaty(m, o.id, 'nap') && !S.allied(m, o.id)) h += btn('nap', `Non-aggression pact<small>${fmtDur(360)}</small>`);
+    if (!S.hasAccess(m, o.id)) h += btn('access', `Passage rights<small>${fmtDur(360)}, troops may cross</small>`);
     if (!S.allied(m, o.id)) h += btn('alliance', 'Alliance<small>shared wars</small>');
     h += btn('gift', 'Gift $100<small>improves relations</small>', 'data-x="100"');
     h += btn('tribute', 'Demand tribute<small>works only if they fear you</small>', '', 'warn');
@@ -453,7 +480,7 @@ function dipPanel() {
     h += '<h4>Incoming</h4>';
     for (const p of props) {
       const f = nat(p.from);
-      h += `<div class="row" style="cursor:default">${dotOf(f)}<div class="grow"><div class="nm">${f.short}</div><div class="sub">${p.text} <span class="mono">${Math.max(0, Math.ceil(p.exp - g.t))}s</span></div></div><button class="btn pri" data-act="pyes" data-id="${p.id}">Accept</button><button class="btn" data-act="pno" data-id="${p.id}">Decline</button></div>`;
+      h += `<div class="row" style="cursor:default">${dotOf(f)}<div class="grow"><div class="nm">${f.short}</div><div class="sub">${p.text} <span class="mono">${fmtDur(p.exp - g.t)}</span></div></div><button class="btn pri" data-act="pyes" data-id="${p.id}">Accept</button><button class="btn" data-act="pno" data-id="${p.id}">Decline</button></div>`;
     }
   }
   h += '<h4>Nations</h4>';
@@ -475,18 +502,21 @@ function intelPanel() {
   h += '</table>';
   const dead = g.nations.filter(n => !n.alive);
   if (dead.length) h += `<p class="note">Fallen: ${dead.map(n => n.short).join(', ')}</p>`;
-  h += '<h4>Game</h4><div class="btns"><button class="btn" data-act="save">Save game</button><button class="btn warn" data-act="newgame">New game</button></div>';
+  const pk = paceOf(pace()).k;
+  h += `<h4>Game</h4><div class="opts">${paceSeg(pk, 'pace')}</div><p class="note">${paceHint(pk)} Speed buttons multiply this pace.</p>`;
+  h += `<div class="opts">World runs while away: ${awaySeg(g.opts.away, 'away')}</div>`;
+  h += '<div class="btns"><button class="btn" data-act="save">Save game</button><button class="btn warn" data-act="newgame">New game</button></div>';
   h += `<details><summary>How to play</summary>
   <p>Tap an army badge, then tap a state to march there. Armies need passage rights to cross land you are at peace with.</p>
-  <p>Declare war from the Diplomacy tab. A state falls when its garrison is beaten and you hold it for a few seconds.</p>
+  <p>Declare war from the Diplomacy tab. A state falls when its garrison is beaten and you hold it long enough. Forts, bunkers and home soil all make that take longer.</p>
+  <p>Defences take time to build, so build before the enemy comes. Forts help every defender, bunkers harden the garrison, anti-air shoots down air wings, and armies that stay put on friendly soil dig in. Artillery halves all of these bonuses.</p>
   <p>Conquered states are restless. Keep troops there, or they rise up and return to their old owners or go independent.</p>
   <p>Armor beats infantry, air beats armor, infantry handles air, artillery shines behind a front. Fortify the border you expect to be hit.</p>
   <p>There is no premium currency and no forced ending. Past 60% of the population the game asks once if you want to stop. The late game keeps going: coalitions form against a runaway power.</p></details>`;
   h += '<h4>Events</h4>';
   const ev = g.log.slice(-40).reverse();
   for (const e of ev) {
-    const mm = Math.floor(e.t / 60), ss = Math.floor(e.t % 60);
-    h += `<div class="logl ${e.kind}"><time>${mm}:${String(ss).padStart(2, '0')}</time><span>${e.txt}</span></div>`;
+    h += `<div class="logl ${e.kind}"><time>${clockText(e.t)}</time><span>${e.txt}</span></div>`;
   }
   return h;
 }
@@ -510,19 +540,20 @@ function panelSig() {
   if (UI.tab === 'map') {
     s += `|${UI.selP}|${UI.selA}`;
     const a = UI.selA ? army(UI.selA) : null;
-    if (UI.selA) s += a ? [a.at, a.mv && a.mv.to, a.route.length, UT.map(t => Math.round(a.u[t])).join(',')].join(':') : 'x';
+    if (UI.selA) s += a ? [a.at, a.mv && a.mv.to, a.route.length, UT.map(t => Math.round(a.u[t])).join(','), a.at != null ? Math.round(S.entrench(a, g.provs[a.at]) * 20) : ''].join(':') : 'x';
     if (UI.selP != null) {
       const p = g.provs[UI.selP];
-      s += [p.owner, p.fort, p.infra, p.q.length, p.battle ? 1 : 0, p.cap ? 1 : 0, g.armies.filter(x => x.at === UI.selP).map(x => x.id + '.' + x.owner + '.' + Math.round(S.unitCount(x.u))).join('/')].join('|');
-      if (n && p.owner === m) s += UT.map(t => S.canPay(n, S.unitCost(t)) ? 1 : 0).join('') + [['fort', p.fort], ['infra', p.infra]].map(([k, l]) => l < S.MAXLVL && S.canPay(n, S.buildCost(k, l)) ? 1 : 0).join('');
+      s += [p.owner, S.BK.map(k => p[k]).join(''), (p.bq || []).length, p.q.length, p.battle ? 1 : 0, p.cap ? 1 : 0, g.armies.filter(x => x.at === UI.selP).map(x => x.id + '.' + x.owner + '.' + Math.round(S.unitCount(x.u))).join('/')].join('|');
+      if (n && p.owner === m) s += UT.map(t => S.canPay(n, S.unitCost(t)) ? 1 : 0).join('') + S.BK.map(k => { const l = S.plannedLvl(p, k); return l < S.BUILD[k].max && S.canPay(n, S.buildCost(k, l)) ? 1 : 0; }).join('');
       if (UI.selA && a) { const tp = g.provs[UI.selP]; s += S.atWar(a.owner, tp.owner) + '' + S.hasAccess(a.owner, tp.owner); }
     }
   } else if (UI.tab === 'forces') {
     s += g.armies.filter(a => a.owner === m).map(a => a.id + ':' + (a.at != null ? a.at : '>' + a.mv.to) + ':' + Math.round(S.unitCount(a.u))).join(',') + '|' + g.provs.filter(p => p.owner === m).map(p => p.q.length).join('');
   } else if (UI.tab === 'dip') {
+    if (m < 0) return s + '|observer';
     s += `|${UI.dipOpen}|${UI.dipMsg}|` + g.proposals.map(p => p.id).join(',') + '|' + g.nations.filter(o => o.alive).map(o => o.id + statusTags(m, o.id).length + Math.round(S.opinion(o.id, m).total / 4)).join(',');
   } else {
-    s += '|' + g.seq + '|' + g.nations.map(o => (o.alive ? 1 : 0) + ':' + S.D.owned[o.id].length).join(',');
+    s += '|' + g.seq + '|' + g.opts.pace + g.opts.away + '|' + g.nations.map(o => (o.alive ? 1 : 0) + ':' + S.D.owned[o.id].length).join(',');
   }
   return s;
 }
@@ -543,24 +574,31 @@ function updateBinds() {
     let v = null;
     if (k[0] === 'g') { const p = g.provs[+k[1]]; v = `${f1(p.garrison)}/${f1(S.maxGar(p))}`; }
     else if (k[0] === 'un') v = Math.round(g.provs[+k[1]].unrest * 100) + '%';
-    else if (k[0] === 'q') { const it = g.provs[+k[1]].q[+k[2]]; v = it ? Math.ceil(it.left) : ''; }
+    else if (k[0] === 'q') { const it = g.provs[+k[1]].q[+k[2]]; v = it ? fmtDur(it.left) : ''; }
+    else if (k[0] === 'bq') { const b = (g.provs[+k[1]].bq || [])[+k[2]]; v = b ? fmtDur(b.left) : ''; }
     else if (k[0] === 'ac') { const a = army(+k[1]); v = a ? Math.round(a.u[k[2]]) : ''; }
-    else if (k[0] === 'eta') { const a = army(+k[1]); v = a ? Math.ceil(etaOf(a)) : ''; }
+    else if (k[0] === 'eta') { const a = army(+k[1]); v = a ? fmtDur(etaOf(a)) : ''; }
     if (v !== null && e.textContent !== String(v)) e.textContent = v;
   });
   document.querySelectorAll('#sheet [data-bar]').forEach(e => {
     const k = e.dataset.bar.split(':');
     if (k[0] === 'un') e.style.width = Math.round(g.provs[+k[1]].unrest * 100) + '%';
+    else if (k[0] === 'bq') { const b = (g.provs[+k[1]].bq || [])[0]; e.style.width = b ? Math.round(100 * (1 - b.left / b.total)) + '%' : '100%'; }
   });
 }
 
 // ------------------------------------------------------------ header / resources
+// campaign clock: real time the war has taken at 1x on this pace
+function clockText(t, p) {
+  const s = (t === undefined ? G().t : t) / (p || pace());
+  const day = Math.floor(s / 86400) + 1, h = Math.floor(s % 86400 / 3600), mm = Math.floor(s % 3600 / 60);
+  return `Day ${day} ${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
 function renderHeader() {
   const g = G(), m = me(), n = m >= 0 ? nat(m) : null;
   $('#whoName').textContent = n ? n.short : 'Observer';
   $('#whoDot').style.background = n ? n.color : 'var(--ink2)';
-  const day = Math.floor(g.t / 2) + 1;
-  $('#clock').textContent = `Day ${day}` + (n ? ` · ${S.D.owned[m].length} states` : '');
+  $('#clock').textContent = clockText() + (n ? ` · ${S.D.owned[m].length} states` : '');
   if (!n) { $('#res').innerHTML = `<span class="rs"><small>${g.nations.filter(x => x.alive).length} nations alive</small></span>`; return; }
   const r = n.rate;
   const chip = (lab, val, rate) => `<span class="rs"><small>${lab}</small><b>${Math.floor(val)}</b><em class="${rate >= 0 ? 'up' : 'down'}">${sgn(rate)}</em></span>`;
@@ -573,10 +611,13 @@ function renderHeader() {
 // ------------------------------------------------------------ modals
 function modal(html) { const m = $('#modal'); m.innerHTML = `<div class="mwrap">${html}</div>`; m.hidden = false; UI.modal = true; m.scrollTop = 0; }
 function closeModal() { $('#modal').hidden = true; UI.modal = false; }
-let startDiff = 'normal';
+let startDiff = 'normal', startPace = 'long', startAway = true;
+const paceSeg = (cur, act) => `<div class="seg" role="group" aria-label="Game pace">${PACES.map(p => `<button data-act="${act}" data-v="${p.k}" aria-pressed="${p.k === cur}">${p.n}</button>`).join('')}</div>`;
+const awaySeg = (on, act) => `<div class="seg" role="group" aria-label="World runs while away"><button data-act="${act}" data-v="1" aria-pressed="${!!on}">On</button><button data-act="${act}" data-v="0" aria-pressed="${!on}">Off</button></div>`;
+const paceHint = k => PACES.find(p => p.k === k).hint;
 function showStart() {
   let saved = null;
-  try { const s = localStorage.getItem(SAVE_KEY); if (s) { const o = JSON.parse(s); saved = { day: Math.floor(o.t / 2) + 1, who: o.opts.player >= 0 ? o.nations[o.opts.player].short : 'Observer' }; } } catch (_) {}
+  try { const s = localStorage.getItem(SAVE_KEY); if (s) { const o = JSON.parse(s); saved = { day: clockText(o.t, o.opts.pace || 1), who: o.opts.player >= 0 ? o.nations[o.opts.player].short : 'Observer' }; } } catch (_) {}
   let cards = '';
   S.NATIONS.forEach((def, i) => {
     const pop = def.states.reduce((s, ab) => s + PS.find(p => p.abbr === ab).pop, 0);
@@ -585,15 +626,20 @@ function showStart() {
   });
   modal(`<div class="title">Frontline<br>USA</div>
   <p class="lede">Real-time grand strategy on the American map. Ten rival powers, one continent. No premium currency, no timers to buy out, no forced ending.</p>
-  ${saved ? `<div class="btns"><button class="btn pri" data-act="continue">Continue &middot; ${saved.who}, day ${saved.day}</button></div>` : ''}
+  ${saved ? `<div class="btns"><button class="btn pri" data-act="continue">Continue &middot; ${saved.who}, ${saved.day}</button></div>` : ''}
   <h4>AI difficulty</h4>
   <div class="opts"><div class="seg" role="group" aria-label="AI difficulty">${['easy', 'normal', 'hard'].map(d => `<button data-act="diff" data-v="${d}" aria-pressed="${d === startDiff}">${d[0].toUpperCase() + d.slice(1)}</button>`).join('')}</div></div>
+  <h4>Game pace</h4>
+  <div class="opts">${paceSeg(startPace, 'pace0')}</div><p class="note" id="paceHint">${paceHint(startPace)}</p>
+  <h4>World keeps running while you are away</h4>
+  <div class="opts">${awaySeg(startAway, 'away0')}</div>
+  <p class="note">When on, the war goes on while this page is closed, like a real campaign. Your garrisons, forts and training queues carry on; your armies hold where you left them. While you are gone your generals only defend: idle armies move to cover threatened states, but they never attack, recruit or spend. A paused game stays frozen.</p>
   <h4>Choose your nation</h4>
   <div class="cards">${cards}</div>
   <div class="btns"><button class="btn" data-act="pick" data-v="-1">Watch the AI play</button></div>`);
 }
 function startNew(i) {
-  S.newGame({ player: i, diff: startDiff });
+  S.newGame({ player: i, diff: startDiff, pace: PACES.find(p => p.k === startPace).v, away: startAway });
   afterStart();
 }
 function afterStart() {
@@ -609,15 +655,56 @@ function afterStart() {
   if (m >= 0) toast('Your armies are the numbered badges. Tap one, then tap a state.', 'ok');
 }
 function saveNow(quiet) {
-  try { localStorage.setItem(SAVE_KEY, S.serialize()); if (!quiet) toast('Game saved', 'ok'); }
+  try { stamp(); localStorage.setItem(SAVE_KEY, S.serialize()); if (!quiet) toast('Game saved', 'ok'); }
   catch (_) { if (!quiet) toast('Could not save in this browser', 'bad'); }
 }
 function loadSaved() {
   try {
     const s = localStorage.getItem(SAVE_KEY);
     if (!s) return false;
-    S.load(s); afterStart(); return true;
+    S.load(s); afterStart(); resumeFromSave(); return true;
   } catch (_) { return false; }
+}
+// remember when (in real time) the world was last advanced, and whether it was paused
+function stamp() { const g = G(); if (g) { g.wall = Date.now(); g.paused = UI.speed === 0; } }
+function resumeFromSave() {
+  const g = G();
+  if (g.paused) { setSpeed(0); toast('Paused. Press play to resume.', 'info'); return; }
+  if (g.opts.away && g.wall) catchUp(Date.now() - g.wall);
+}
+
+// ------------------------------------------------------------ offline progress
+// Run the world forward for the real time the player was away, in small slices so the page stays responsive.
+let catching = false;
+function catchUp(ms) {
+  const g = G();
+  if (catching || !g || !g.opts.away || ms < 4000) return;
+  const want = ms / 1000 * pace(), secs = Math.min(want, MAX_AWAY);
+  if (secs < 1) return;
+  catching = true;
+  const seq0 = g.seq, m = me(), owned0 = m >= 0 ? S.D.owned[m].length : 0, t0 = g.t;
+  modal(`<div class="title">While you were away</div><p class="lede">${fmtDur(want)} have passed. Catching the world up&hellip;</p><div class="bar"><i id="cuBar" style="width:0%"></i></div>`);
+  let done = 0;
+  const slice = () => {
+    const end = performance.now() + 30;
+    G().caretaker = true;     // your generals hold the line while you are gone
+    while (done < secs && performance.now() < end) { const d = Math.min(5, secs - done); S.advance(d); done += d; }
+    G().caretaker = false;
+    const bar = document.getElementById('cuBar');
+    if (bar) bar.style.width = Math.round(100 * done / secs) + '%';
+    if (done < secs) { setTimeout(slice, 0); return; }
+    catching = false;
+    stamp();
+    const gg = G(), ev = gg.log.filter(e => e.s > seq0 && e.kind !== 'proposal' && (e.me || e.kind === 'elim'));
+    const offers = gg.proposals.filter(p => p.to === m).length;
+    const lines = ev.slice(-14).map(e => `<div class="logl ${e.kind}"><time>${clockText(e.t)}</time><span>${e.txt}</span></div>`).join('');
+    const now = m >= 0 ? S.D.owned[m].length : 0;
+    const head = m >= 0 ? (!gg.nations[m].alive ? 'Your nation fell while you were away.' : now === owned0 ? `You still hold all ${now} of your states.` : now > owned0 ? `You now hold ${now} states (up from ${owned0}).` : `You hold ${now} states, down from ${owned0}.`) : '';
+    UI.lastSeq = gg.seq;
+    modal(`<div class="title">While you were away</div><p class="lede">${fmtDur(gg.t - t0)} of war went by${want > secs ? ` (the world moves at most ${fmtDur(MAX_AWAY)} while you are gone)` : ''}. ${head}</p>${lines || '<p class="note">Nothing important happened on your borders.</p>'}${offers ? `<p class="note">${offers} diplomatic offer${offers > 1 ? 's are' : ' is'} waiting in the Diplomacy tab.</p>` : ''}<div class="btns"><button class="btn pri" data-act="keep">Continue</button></div>`);
+    renderHeader(); dirty();
+  };
+  setTimeout(slice, 0);
 }
 
 // ------------------------------------------------------------ actions (delegated clicks)
@@ -644,6 +731,10 @@ document.addEventListener('click', e => {
     case 'zoom': { const r = svg.getBoundingClientRect(); zoomAt(r.left + r.width / 2, r.top + r.height / 2, +d.v); break; }
     case 'fit': fitView(); break;
     case 'pick': startNew(+d.v); break;
+    case 'pace0': startPace = d.v; document.querySelectorAll('[data-act="pace0"]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.v === startPace))); { const h = $('#paceHint'); if (h) h.textContent = paceHint(startPace); } break;
+    case 'away0': startAway = d.v === '1'; document.querySelectorAll('[data-act="away0"]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.v === d.v))); break;
+    case 'pace': G().opts.pace = PACES.find(p => p.k === d.v).v; toast(`Pace set to ${PACES.find(p => p.k === d.v).n}`, 'ok'); dirty(); break;
+    case 'away': G().opts.away = d.v === '1'; stamp(); dirty(); break;
     case 'diff': startDiff = d.v; document.querySelectorAll('[data-act="diff"]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.v === startDiff))); break;
     case 'continue': if (!loadSaved()) toast('No save found', 'bad'); break;
     case 'recruit': { const r = S.cmdRecruit(m, +d.p, d.t); toast(r.msg, r.ok ? 'ok' : 'bad'); dirty(); break; }
@@ -677,21 +768,25 @@ document.addEventListener('click', e => {
 document.addEventListener('keydown', e => {
   if (!UI.started || UI.modal) return;
   if (e.key === ' ') { e.preventDefault(); setSpeed(UI.speed === 0 ? 1 : 0); }
-  else if (e.key === '1') setSpeed(1); else if (e.key === '2') setSpeed(2); else if (e.key === '3') setSpeed(4);
+  else if (e.key === '1') setSpeed(1); else if (e.key === '2') setSpeed(4); else if (e.key === '3') setSpeed(16);
   else if (e.key === 'Escape') { UI.selA = null; UI.selP = null; dirty(); }
   else if (e.key === 'Enter' && e.target.matches && e.target.matches('.row')) e.target.click();
 });
 
 // ------------------------------------------------------------ frame loop
-let last = performance.now(), acc = 0, uiClock = 0, saveClock = 0, lastDraw = 0;
+let last = performance.now(), lastWall = Date.now(), acc = 0, uiClock = 0, saveClock = 0, lastDraw = 0;
 function frame(now) {
   const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  const wall = Date.now(), gap = wall - lastWall; lastWall = wall;
   if (UI.started && G()) {
+    // the tab was hidden or the device slept: let the world catch up
+    if (gap > 4000 && UI.speed > 0 && !UI.modal) catchUp(gap);
     if (UI.speed > 0 && !UI.modal) {
-      acc += dt * UI.speed;
+      acc += dt * UI.speed * pace();
       let n = 0;
       while (acc >= 0.25 && n < 40) { S.step(0.25); acc -= 0.25; n++; }
       if (n === 40) acc = 0;
+      else if (acc > 0) { S.step(acc); acc = 0; }   // slow paces advance a sliver every frame so movement stays smooth
     }
     if (now - lastDraw >= 33) { lastDraw = now; drawMap(now); }
     uiClock += dt; saveClock += dt;
@@ -735,11 +830,12 @@ function boot(data) {
   data = data || {};
   buildMap();
   requestAnimationFrame(frame);
-  if (data.save) { try { S.load(data.save); afterStart(); if (data.ui) { UI.speed = data.ui.speed || 1; setSpeed(UI.speed); } return; } catch (_) {} }
+  if (data.save) { try { S.load(data.save); afterStart(); if (data.ui) { UI.speed = data.ui.speed === undefined ? 1 : data.ui.speed; setSpeed(UI.speed); } return; } catch (_) {} }
   showStart();
 }
 const hot = window.claude && window.claude.hot;
 try { if (hot && hot.snapshot) hot.snapshot(() => ({ save: UI.started && G() ? S.serialize() : null, ui: { speed: UI.speed } })); } catch (_) {}
 if (hot && hot.ready) hot.ready(boot); else boot((hot && hot.data) || {});
-window.__flusa = { UI, S, drawMap, renderPanel };
+document.addEventListener('visibilitychange', () => { if (document.hidden && UI.started && G() && !UI.modal) saveNow(true); });
+window.__flusa = { UI, S, drawMap, renderPanel, catchUp, fmtDur };
 })();
