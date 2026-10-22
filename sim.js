@@ -349,6 +349,12 @@ function opinion(a, b) {
   add('Common enemy', Math.min(24, shared * 12));
   add('At war with our ally', -22 * Math.min(2, onAlly));
   add('Allied with our enemy', -14 * Math.min(2, allyOnMe));
+  // two great powers on one border, with nothing to fight together, eye each other
+  const sa = D ? D.share[a] || 0 : 0, sb = D ? D.share[b] || 0 : 0;
+  if (!shared && sa > 0.15 && sb > 0.15 && borders(a, b)) add('Great power rivalry', -25 * clamp((sa + sb - 0.3) / 0.4, 0, 1));
+  // an alliance with no common enemy for a long time goes stale
+  const al = allied(a, b) && G.treaties.find(t => t.type === 'alliance' && ((t.a === a && t.b === b) || (t.a === b && t.b === a)));
+  if (al) { const idle = G.t - (al.used || al.t0) - 600; if (idle > 0) add('Alliance without purpose', -Math.min(30, idle / 20)); }
   // troops parked on our soil
   let tension = 0;
   if (!atWar(a, b) && !hasAccess(a, b)) {
@@ -1162,7 +1168,23 @@ function revolt(p) {
   const old = G.nations[p.owner], d = PS[p.id];
   const origin = G.nations[p.orig];
   p.unrest = 0.3; p.q = []; p.bq = [];
-  if (origin && origin.alive && origin.id !== p.owner) {
+  if (origin && !origin.alive && D.share[old.id] > 0.25) {
+    // a fallen nation rises again inside an overstretched empire, with its restless old provinces
+    const take = [p.id], seen = new Set(take);
+    for (let i = 0; i < take.length; i++) for (const q of PS[take[i]].nbrs) {
+      const Q = G.provs[q];
+      if (seen.has(q) || Q.owner !== old.id || Q.orig !== origin.id || Q.unrest < 0.5 || take.length >= 6) continue;
+      seen.add(q); take.push(q);
+    }
+    Object.assign(origin, startStock(0.6), { tech: origin.tech || {}, rs: null, alive: true, capital: p.id, infamy: 0, rate: zeroRate(),
+      ai: { next: G.t + 3, focus: null, tprop: {}, lastWar: G.t } });
+    calcMods(origin);
+    for (const q of take) { const Q = G.provs[q]; Q.owner = origin.id; Q.garrison = 2; Q.unrest = 0.2; Q.q = []; Q.bq = []; }
+    const a = newArmy(origin.id, p.id); a.u.inf = 3 + take.length;
+    G.memory = G.memory.filter(m => m.a !== origin.id && m.b !== origin.id);
+    log(`${origin.name} rises again in ${d.name} and throws off ${old.short}`, 'revolt', { pid: p.id, nats: [old.id, origin.id] });
+    G.wars[key(origin.id, old.id)] = G.t;
+  } else if (origin && origin.alive && origin.id !== p.owner) {
     p.owner = origin.id; p.garrison = 2;
     log(`${d.name} rises up against ${old.short} and returns to ${origin.short}`, 'revolt', { pid: p.id, nats: [old.id, origin.id] });
   } else {
@@ -1329,7 +1351,11 @@ function answerProposal(id, yes) {
     remember(pr.from, me, 'Paid tribute', 4, 300, 20);
     return { ok: true, msg: `Paid ${Math.round(amt)} cash` };
   }
-  if (pr.kind === 'joinwar') { return declareWar(me, pr.data.target, 'ally'); }
+  if (pr.kind === 'joinwar') {
+    const r = declareWar(me, pr.data.target, 'ally');
+    if (r && r.ok !== false) remember(pr.from, me, 'Fought at our side', 20, 600, 40);
+    return r;
+  }
   if (pr.kind === 'ceasefire' && !atWar(me, pr.from)) return { ok: false, msg: 'No longer at war' };
   applyAgreement(pr.kind, pr.from, me, pr.data.target);
   return { ok: true, msg: 'Agreed' };
@@ -1451,7 +1477,8 @@ function aiEconomy(n) {
   if (buildFirst) { const need = aiBuild(n, wars, reserve, ts); if (need) n.ai.save = { c: need, until: G.t + 15 }; else n.ai.save = null; }
   const sv = n.ai.save && n.ai.save.until > G.t ? n.ai.save.c : 0;
   const uReserve = reserve + (sv && !(wars.length && ts[n.capital] > 3) ? sv : 0);
-  const armyCap = 10 + owned.length * 1.8 + Math.max(0, n.rate.cash) * 4;
+  // a treasury that keeps growing raises the cap, so a rich empire does not just hoard
+  const armyCap = (10 + owned.length * 1.8 + Math.max(0, n.rate.cash) * 4) * (1 + clamp((n.cash - 1500) / 4000, 0, 1));
   // where each unit type can be trained right now
   let siteMemo = {};
   const site = t => siteMemo[t] !== undefined ? siteMemo[t] : (siteMemo[t] = findSite(t));
@@ -1893,7 +1920,7 @@ function aiWar(n) {
     if (!hegemon && busy >= 2) continue;
     if (!hegemon && busy === 1 && n.pers !== 'opportunist') continue;
     let need = 1.25 / aggr;
-    need *= clamp(1 - (G.t - n.ai.lastWar - 180) / 2400, 0.78, 1);     // restlessness after long peace
+    need *= clamp(1 - (G.t - n.ai.lastWar - 180) / 2400, 0.55, 1);     // restlessness after long peace
     if (hegemon) need *= 0.75;
     if (hasTreaty(nid, c.id, 'nap') || hasTreaty(nid, c.id, 'trade')) need *= 1.35;
     if (busy === 1 && !hegemon) need *= 1.3;
@@ -1904,6 +1931,14 @@ function aiWar(n) {
     if (!best || score > best.score) best = { id: c.id, score };
   }
   if (best) { n.ai.warTarget = best.id; declareWar(nid, best.id, 'ambition'); n.ai.lastWar = G.t; }
+}
+const TREATY_NAME = { alliance: 'alliance', trade: 'trade pact', nap: 'non-aggression pact', access: 'passage agreement' };
+// an AI walks away from a treaty: no infamy, but the other side remembers
+function breakTreaty(a, b, type) {
+  removeTreaties(a, b, [type]);
+  remember(b, a, 'Cancelled our agreement', -8, 300, 30);
+  log(`${G.nations[a].short} ended its ${TREATY_NAME[type]} with ${G.nations[b].short}`, 'treaty', { nats: [a, b] });
+  enforceBorders();
 }
 function cd(n, k, secs) { if ((n.ai.tprop[k] || 0) > G.t) return false; n.ai.tprop[k] = G.t + secs; return true; }
 function aiDiplomacy(n) {
@@ -1924,6 +1959,13 @@ function aiDiplomacy(n) {
     if (X.player) { if (cd(n, 'jw' + e + x, 120)) propose(nid, x, 'joinwar', `asks you to join the war against ${G.nations[e].short}.`, { target: e }, 60); }
     else if (enemiesOf(x).length < 2 && evalProposal('callarms', x, nid, e).ok && Math.random() < 0.5) declareWar(x, e, 'ally');
   }
+  // a war against a runaway power looks for help from the player too, ally or not
+  const pl = G.opts.player;
+  if (pl >= 0 && G.nations[pl].alive && !G.caretaker) for (const e of enemiesOf(nid)) {
+    if (!(D.share[e] > 0.27) || e === pl || atWar(pl, e) || allied(pl, e) || truceLeft(pl, e) > 0 || allied(nid, pl)) continue;
+    if (!borders(pl, e) || opn(nid, pl) < 0 || !cd(n, 'co' + e, 400)) continue;
+    propose(nid, pl, 'joinwar', `invites you into the coalition against ${G.nations[e].short}.`, { target: e }, 60);
+  }
   // treaties
   const others = alive().filter(o => o.id !== nid && !atWar(nid, o.id)).sort(() => Math.random() - 0.5).slice(0, 3);
   for (const o of others) {
@@ -1941,8 +1983,18 @@ function aiDiplomacy(n) {
     if (o.player) propose(nid, o.id, k, ({ trade: 'offers a trade pact.', nap: 'offers a non-aggression pact.', access: 'asks for passage rights.', alliance: 'proposes an alliance.' })[k], {}, 60);
     else if (evalProposal(k, o.id, nid).ok) applyAgreement(k, nid, o.id);
   }
+  // drop treaties that no longer mean anything
+  for (const x of alliesOf(nid)) {
+    if (opn(nid, x) >= 18 || enemiesOf(nid).some(e => atWar(x, e)) || Math.random() > 0.3) continue;
+    breakTreaty(nid, x, 'alliance'); break;
+  }
+  for (const t of G.treaties.slice()) {
+    if (t.type !== 'trade' || (t.a !== nid && t.b !== nid)) continue;
+    const o = t.a === nid ? t.b : t.a;
+    if (opn(nid, o) < -12 && Math.random() < 0.3) { breakTreaty(nid, o, 'trade'); break; }
+  }
   // keep friendships warm
-  for (const o of alive()) if (o.id !== nid && !atWar(nid, o.id) && (hasTreaty(nid, o.id, 'trade') || allied(nid, o.id)) && Math.random() < 0.4) remember(nid, o.id, 'Peaceful relations', 2, 400, 15);
+  for (const o of alive()) if (o.id !== nid && !atWar(nid, o.id) && (hasTreaty(nid, o.id, 'trade') || allied(nid, o.id)) && !(D.share[nid] > 0.15 && D.share[o.id] > 0.15) && Math.random() < 0.4) remember(nid, o.id, 'Peaceful relations', 2, 400, 15);
   // renew expiring pacts
   for (const t of G.treaties.slice()) {
     if (!t.exp || (t.type !== 'nap' && t.type !== 'access')) continue;
@@ -2081,6 +2133,8 @@ function secondTick() {
     enforceBorders();
   }
   G.proposals = G.proposals.filter(p => p.exp > G.t && G.nations[p.from].alive);
+  // an alliance is in use while both sides fight a common enemy
+  if (Math.floor(G.t) % 10 === 0) for (const t of G.treaties) if (t.type === 'alliance' && enemiesOf(t.a).some(e => atWar(t.b, e))) t.used = G.t;
   // infamy fades
   for (const n of G.nations) if (n.infamy > 0) n.infamy = Math.max(0, n.infamy - 0.04);
   // prune memories
