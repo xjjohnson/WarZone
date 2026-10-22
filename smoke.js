@@ -33,7 +33,11 @@ const click = sel => { const el = d.querySelector(sel); if (!el) throw new Error
   if (d.querySelector('[data-act="recruit"][data-t="pb"]')) { click('[data-act="recruit"][data-t="pb"]'); await sleep(50); }
   console.log('categories:', [...d.querySelectorAll('#sheet .cat')].map(e => e.textContent).join(','), 'queue now:', S.G.provs[UI.selP].q.map(q => q.type).join(','));
   // tabs
-  for (const t of ['forces', 'dip', 'intel', 'map']) { click(`[data-act="tab"][data-v="${t}"]`); await sleep(350); console.log('tab', t, 'len', d.getElementById('sheet').innerHTML.length); }
+  for (const t of ['forces', 'dip', 'tech', 'intel', 'map']) { click(`[data-act="tab"][data-v="${t}"]`); await sleep(350); console.log('tab', t, 'len', d.getElementById('sheet').innerHTML.length); }
+  // research: start a project from the Tech tab, then cancel and restart it
+  click('[data-act="tab"][data-v="tech"]'); await sleep(350);
+  click('[data-act="research"][data-k="ind1"]'); await sleep(350);
+  console.log('researching:', S.G.nations[2].rs && S.G.nations[2].rs.k, 'cards:', d.querySelectorAll('#sheet .btn.tech').length);
   // select own army, then a neighbour
   const mine = S.G.armies.find(a => a.owner === 2 && a.at != null && S.PS[a.at].nbrs.some(q => S.G.provs[q].owner !== 2));
   click(`[data-act="tab"][data-v="forces"]`); await sleep(350);
@@ -51,7 +55,7 @@ const click = sel => { const el = d.querySelector(sel); if (!el) throw new Error
   for (let i = 0; i < 6 * 60 * 4; i++) { S.step(0.25); if (i % 120 === 0) await sleep(30); }
   await sleep(500);
   console.log('after sim: clock', d.getElementById('clock').textContent, 'badges', d.querySelectorAll('.bdg').length, 'armies', S.G.armies.length, 'toasts', d.querySelectorAll('.toast').length);
-  for (const t of ['forces', 'dip', 'intel', 'map']) { click(`[data-act="tab"][data-v="${t}"]`); await sleep(350); }
+  for (const t of ['forces', 'dip', 'tech', 'intel', 'map']) { click(`[data-act="tab"][data-v="${t}"]`); await sleep(350); }
   // declare war flow + proposal handling
   click('[data-act="tab"][data-v="dip"]'); await sleep(350);
   const foe = S.G.nations.find(n => n.alive && n.id !== 2 && n.id !== nOwner && !S.atWar(2, n.id) && !S.allied(2, n.id));
@@ -64,7 +68,7 @@ const click = sel => { const el = d.querySelector(sel); if (!el) throw new Error
   }
   // missiles: build a salvo at the capital and check the strike card
   const g = S.G, cap = g.nations[2].capital, wars = Object.keys(g.wars).map(k => k.split('-').map(Number)).filter(p => p.includes(2)).map(p => p[0] === 2 ? p[1] : p[0]);
-  g.provs[cap].b.arms = 1; Object.assign(g.nations[2], { cash: 2000, comp: 500, fuel: 500, elec: 500, rare: 500 });
+  g.provs[cap].b.arms = 1; g.nations[2].tech.gm1 = 1; Object.assign(g.nations[2], { cash: 2000, comp: 500, fuel: 500, elec: 500, rare: 500 });
   console.log('missile recruit:', S.cmdRecruit(2, cap, 'msl').msg);
   for (let i = 0; i < 25 * 4; i++) S.step(0.25);
   const sal = g.armies.find(a => a.owner === 2 && S.domOf(a) === 'msl');
@@ -83,6 +87,7 @@ const click = sel => { const el = d.querySelector(sel); if (!el) throw new Error
   const dismiss = d.querySelector('#modal:not([hidden]) [data-act="watch"], #modal:not([hidden]) [data-act="keep"]');
   if (dismiss) { console.log('dismissing modal:', dismiss.dataset.act); dismiss.dispatchEvent(new w.MouseEvent('click', { bubbles: true })); await sleep(100); }
   click('[data-act="tab"][data-v="intel"]'); await sleep(350); click('[data-act="save"]');
+  console.log('player tech:', Object.keys(S.G.nations[2].tech).join(',') || 'none', 'rs', JSON.stringify(S.G.nations[2].rs));
   console.log('saved bytes', (w.localStorage.getItem('frontline_usa_save_v1') || '').length);
   console.log(errors.length ? 'ERRORS:\n' + errors.join('\n') : 'NO ERRORS');
   process.exit(errors.length ? 1 : 0);

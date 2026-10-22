@@ -41,6 +41,7 @@ const bl = {};
 for (const p of g.provs) for (const k of SIM.BK) bl[k] = (bl[k] || 0) + p.b[k];
 const mx = {}; for (const p of g.provs) for (const k of ['airb','naval','arms']) mx[k] = Math.max(mx[k] || 0, p.b[k]);
 console.log('top levels', JSON.stringify(mx));
+console.log('research', g.nations.filter(n => n.alive).map(n => n.short.slice(0, 4) + ':' + Object.keys(n.tech).length + (n.rs ? '+' + n.rs.k : '') + '/' + Math.round(n.rp)).join(' '));
 console.log('buildings', SIM.BK.map(k => k + ':' + bl[k]).join(' '));
 for (const a of g.armies) {
   const dom = SIM.domOf(a);

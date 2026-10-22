@@ -423,7 +423,7 @@ function provCard(pid) {
       const pips = `<span class="pips">${'<i class="on"></i>'.repeat(lvl)}${'<i class="q"></i>'.repeat(plan - lvl)}${'<i></i>'.repeat(max - plan)}</span>`;
       if (plan >= max) { h += `<button class="btn bld dim" disabled><span class="bn">${B.n}${pips}</span><small>${lvl >= max ? 'Maximum level' : 'Maximum level queued'}</small><small class="ef">${B.d}</small></button>`; continue; }
       const c = S.buildCost(k, plan), ok = S.canPay(n, c) && p.bq.length < 3;
-      h += `<button class="btn bld ${ok ? '' : 'dim'}" data-act="build" data-p="${pid}" data-k="${k}"><span class="bn">${B.n}${pips}</span><small>${plan ? 'To level ' + (plan + 1) : 'Build'} &middot; ${costStr(c)} &middot; ${fmtDur(S.buildTime(k, plan))}</small><small class="ef">${B.d}</small></button>`;
+      h += `<button class="btn bld ${ok ? '' : 'dim'}" data-act="build" data-p="${pid}" data-k="${k}"><span class="bn">${B.n}${pips}</span><small>${plan ? 'To level ' + (plan + 1) : 'Build'} &middot; ${costStr(c)} &middot; ${fmtDur(S.buildTime(k, plan, m))}</small><small class="ef">${B.d}</small></button>`;
     }
     h += '</div>';
   } else {
@@ -521,6 +521,38 @@ function forcesPanel() {
   return h;
 }
 
+// seconds until the current research project is done: stock pours in fast, then the income trickles in
+function researchEta(n) {
+  if (!n.rs) return 0;
+  const rem = n.rs.need - n.rs.got, pr = S.pourRate(n), inc = Math.max(0.001, n.rate.rp);
+  if (n.rp >= rem) return rem / pr;
+  // the stock runs out first, then it goes at the income rate
+  const tStock = n.rp / Math.max(0.001, pr - inc);
+  const done = Math.min(rem, tStock * pr);
+  return tStock + (rem - done) / inc;
+}
+function techPanel() {
+  const m = me(); if (m < 0) return '<p class="note">Observing.</p>';
+  const n = nat(m), T = S.TECH;
+  let h = `<div class="hd"><h3>Research</h3><small>${Object.keys(n.tech).length} of ${S.TK.length} done</small></div>`;
+  h += `<div class="kvs"><div class="kv"><span>Research points</span><b data-bind="rp">${Math.floor(n.rp)}</b></div><div class="kv"><span>Per second</span><b>${f2(n.rate.rp)}</b></div></div>`;
+  if (n.rs) {
+    const k = n.rs.k;
+    h += `<div class="row" style="cursor:default"><div class="grow"><div class="nm">Researching ${T[k].n} <span class="mono" data-bind="rse">${fmtDur(researchEta(n))}</span></div><div class="sub">${T[k].d}</div><div class="bar"><i data-bar="rs" style="width:${Math.round(100 * n.rs.got / n.rs.need)}%"></i></div></div><button class="btn" data-act="cancelresearch">Cancel</button></div>`;
+  } else h += '<p class="note">Nothing being researched. Pick a project below; your research points pour into it until it is done. Research labs make more points.</p>';
+  for (const br of S.BRANCHES) {
+    h += `<div class="cat">${br}</div><div class="btns">`;
+    for (const k of S.TK.filter(k => T[k].br === br)) {
+      const t = T[k], done = !!n.tech[k], open = S.techOpen(n, k), cur = n.rs && n.rs.k === k;
+      const sub = done ? 'Done' : cur ? 'In progress' : !open ? 'Needs ' + t.req.filter(r => !n.tech[r]).map(r => T[r].n).join(', ') : `${S.techCost(k)} points \u00b7 tier ${t.tier}`;
+      const act = !done && open && !cur && !n.rs;
+      h += `<button class="btn tech ${done ? 'done' : act ? '' : 'dim'}" ${act ? `data-act="research" data-k="${k}"` : 'disabled'}><span class="bn">${done ? '\u2713 ' : ''}${t.n}</span><small>${sub}</small><small class="ef">${t.d}</small></button>`;
+    }
+    h += '</div>';
+  }
+  return h;
+}
+
 function dipDetail(o) {
   const m = me(), g = G(), their = S.opinion(o.id, m), mine = S.opinion(m, o.id);
   let h = `<div style="padding:8px 0 4px;border-bottom:1px solid var(--line)">`;
@@ -590,6 +622,7 @@ function intelPanel() {
   <p>Declare war from the Diplomacy tab. A province falls when its garrison is beaten and you hold it long enough. Fortifications, bunkers and home soil all make that take longer.</p>
   <p>Each province is a city region that produces cash, manpower and one resource. Build in its city: an army base to train artillery and armor, an air base for air wings, defences to hold it, and industry to grow. Construction takes time, so build before the enemy comes.</p>
   <p>Fortifications help every defender, bunkers harden the garrison, anti-air shoots down air wings, hospitals cut your losses, and armies that stay put on friendly soil dig in. Artillery halves all of these bonuses.</p>
+  <p>Research labs and your capital make research points. In the Tech tab, pick a project and the points pour into it: stronger units, faster armies, better anti-air and missiles, more output, and the techs that unlock strike bombers, strike cruisers and cruise missiles.</p>
   <p>Conquered provinces are restless. Keep troops there, or they rise up and return to their old owners or go independent.</p>
   <p>Ground units win and hold land: tanks break infantry, artillery and special forces ignore half of all defence bonuses, mobile flak guards the army against aircraft. Helicopters and bombers hunt tanks and guns, interceptors win the sky, patrol aircraft find submarines. Air bases train aircraft and airborne troops; a level-2 base is needed for bombers.</p>
   <p>Naval bases train ships, which sail between coastal provinces as fleets: patrol boats, destroyers (which hunt submarines), submarines (which sink ships) and strike cruisers (level-3 base). Cruise missiles come from an arms industry, fly to an enemy province in range, hit once and may wreck a level of its defences. Anti-air, flak, interceptors and destroyers shoot some of them down.</p>
@@ -608,6 +641,7 @@ function renderPanel() {
   if (UI.tab === 'map') h = mapPanel();
   else if (UI.tab === 'forces') h = forcesPanel();
   else if (UI.tab === 'dip') h = dipPanel();
+  else if (UI.tab === 'tech') h = techPanel();
   else h = intelPanel();
   el.innerHTML = h;
   el.scrollTop = sc;
@@ -630,6 +664,8 @@ function panelSig() {
     }
   } else if (UI.tab === 'forces') {
     s += g.armies.filter(a => a.owner === m).map(a => a.id + ':' + (a.at != null ? a.at : '>' + a.mv.to) + ':' + Math.round(S.unitCount(a.u))).join(',') + '|' + g.provs.filter(p => p.owner === m).map(p => p.q.length).join('');
+  } else if (UI.tab === 'tech') {
+    if (n) s += '|' + Object.keys(n.tech).join(',') + '|' + (n.rs ? n.rs.k : '') + '|' + f2(n.rate.rp);
   } else if (UI.tab === 'dip') {
     if (m < 0) return s + '|observer';
     s += `|${UI.dipOpen}|${UI.dipMsg}|` + g.proposals.map(p => p.id).join(',') + '|' + g.nations.filter(o => o.alive).map(o => o.id + statusTags(m, o.id).length + Math.round(S.opinion(o.id, m).total / 4)).join(',');
@@ -659,12 +695,15 @@ function updateBinds() {
     else if (k[0] === 'bq') { const b = (g.provs[+k[1]].bq || [])[+k[2]]; v = b ? fmtDur(b.left) : ''; }
     else if (k[0] === 'ac') { const a = army(+k[1]); v = a ? Math.round(a.u[k[2]]) : ''; }
     else if (k[0] === 'eta') { const a = army(+k[1]); v = a ? fmtDur(etaOf(a)) : ''; }
+    else if (k[0] === 'rp') v = Math.floor(nat(me()).rp);
+    else if (k[0] === 'rse') v = fmtDur(researchEta(nat(me())));
     if (v !== null && e.textContent !== String(v)) e.textContent = v;
   });
   document.querySelectorAll('#sheet [data-bar]').forEach(e => {
     const k = e.dataset.bar.split(':');
     if (k[0] === 'un') e.style.width = Math.round(g.provs[+k[1]].unrest * 100) + '%';
     else if (k[0] === 'bq') { const b = g.provs[+k[1]].bq[0]; e.style.width = b ? Math.round(100 * (1 - b.left / b.total)) + '%' : '100%'; }
+    else if (k[0] === 'rs') { const rs = nat(me()).rs; e.style.width = rs ? Math.round(100 * rs.got / rs.need) + '%' : '100%'; }
   });
 }
 
@@ -821,6 +860,8 @@ document.addEventListener('click', e => {
     case 'continue': if (!loadSaved()) toast('No save found', 'bad'); break;
     case 'recruit': { const r = S.cmdRecruit(m, +d.p, d.t); toast(r.msg, r.ok ? 'ok' : 'bad'); dirty(); break; }
     case 'build': { const r = S.cmdBuild(m, +d.p, d.k); toast(r.msg, r.ok ? 'ok' : 'bad'); dirty(); break; }
+    case 'research': { const r = S.cmdResearch(m, d.k); toast(r.msg, r.ok ? 'ok' : 'bad'); dirty(); break; }
+    case 'cancelresearch': { const r = S.cmdCancelResearch(m); toast(r.msg, r.ok ? 'ok' : 'bad'); dirty(); break; }
     case 'cancelbuild': { const r = S.cmdCancelBuild(m, +d.p); toast(r.msg, r.ok ? 'ok' : 'bad'); dirty(); break; }
     case 'selarmy': selectArmy(+d.a); break;
     case 'selprov': selectProv(+d.p); break;
