@@ -56,14 +56,18 @@ function buildMap() {
   mk('path', { d: 'M48 0H0V48', fill: 'none', stroke: 'var(--grid)', 'stroke-width': 1 }, pat);
   mk('rect', { x: -3000, y: -3000, width: 7000, height: 7000, fill: 'var(--sea)' }, svg);
   mk('rect', { x: -3000, y: -3000, width: 7000, height: 7000, fill: 'url(#grid)' }, svg);
-  for (const k of ['provs', 'borders', 'lanes', 'labels', 'hits', 'sel', 'routes', 'fx', 'armies']) L[k] = mk('g', {}, svg);
+  for (const k of ['provs', 'borders', 'lanes', 'roads', 'labels', 'hits', 'sel', 'routes', 'fx', 'armies']) L[k] = mk('g', {}, svg);
   MAP.provinces.forEach(p => {
     provEls[p.id] = mk('path', { d: p.d, class: 'prov', 'data-p': p.id }, L.provs);
   });
   MAP.borders.forEach((b, i) => { bdEls[i] = mk('path', { d: b.d, class: 'bd' }, L.borders); });
   L.stLines = mk('path', { d: MAP.stateLines, class: 'stl' }, L.borders);
   L.coast = mk('path', { d: MAP.coast, class: 'coast' }, L.borders);
-  MAP.sea.forEach(([a, b]) => mk('line', { x1: PS[a].cx, y1: PS[a].cy, x2: PS[b].cx, y2: PS[b].cy, class: 'sealane' }, L.lanes));
+  MAP.sea.forEach(([a, b]) => mk('line', { x1: PS[a].px, y1: PS[a].py, x2: PS[b].px, y2: PS[b].py, class: 'sealane' }, L.lanes));
+  // the road network troops march along, and its waypoints (sea lanes are drawn above)
+  L.road = mk('path', { class: 'road', d: S.ROADS.filter(r => r.length < 3).map(([a, b]) => `M${S.NODES[a][0]} ${S.NODES[a][1]}L${S.NODES[b][0]} ${S.NODES[b][1]}`).join('') }, L.roads);
+  L.wpt = mk('path', { class: 'wpt', d: '' }, L.roads);
+  UI.wptScale = 0;
   // state names when zoomed out, city names and dots when zoomed in
   MAP.states.forEach((st, i) => {
     const t = mk('text', { class: 'stlab', x: st.x, y: st.y }, L.labels);
@@ -131,6 +135,24 @@ function applyView() {
     t.setAttribute('stroke-width', sw);
   });
   if (L.stLines) L.stLines.setAttribute('stroke-width', (1.1 / v.scale).toFixed(2));
+  // roads fade in as you zoom; waypoint markers keep the same size on screen
+  if (L.road) {
+    L.roads.style.display = z >= 1.25 ? '' : 'none';
+    L.roads.style.opacity = clamp((z - 1.25) / 0.8, 0.35, 1).toFixed(2);
+    L.road.setAttribute('stroke-width', (0.9 / v.scale).toFixed(2));
+    if (z >= 1.25 && Math.abs(v.scale - UI.wptScale) > v.scale * 0.05) {
+      UI.wptScale = v.scale;
+      const r = 2.6 / v.scale, h = (r * 1.7).toFixed(2), w = r.toFixed(2);
+      let d = '';
+      for (let i = PS.length; i < S.NODES.length; i++) { const n = S.NODES[i]; d += `M${(n[0] - r).toFixed(1)} ${(n[1] + r * 0.8).toFixed(1)}l${w} -${h}l${w} ${h}z`; }
+      L.wpt.setAttribute('d', d);
+    }
+  }
+}
+// map coordinates under a screen point
+function mapPt(x, y) {
+  const r = svg.getBoundingClientRect(), v = UI.view;
+  return [v.cx - UI.W / (2 * v.scale) + (x - r.left) / v.scale, v.cy - UI.H / (2 * v.scale) + (y - r.top) / v.scale];
 }
 function zoomAt(cx, cy, f) {
   const r = svg.getBoundingClientRect(), v = UI.view;
@@ -200,9 +222,9 @@ function endPointer(e) {
     const g = gesture; gesture = null; pinch = null;
     if (g.drag && g.moved) {
       const d = UI.drag; UI.drag = null;
-      if (d && d.to != null && e.type === 'pointerup') { selectArmy(d.id); orderTo(d.to); }
+      if (d && d.to != null && e.type === 'pointerup') { selectArmy(d.id); orderTo(d.to, d.node, true); }
       flush(); drawMap(performance.now());
-    } else if (!g.moved && e.type === 'pointerup' && performance.now() - g.t < 700) { handleTap(g.target); flush(); drawMap(performance.now()); }
+    } else if (!g.moved && e.type === 'pointerup' && performance.now() - g.t < 700) { handleTap(g.target, g.x, g.y); flush(); drawMap(performance.now()); }
   }
   if (pts.size < 2) pinch = null;
 }
@@ -210,27 +232,28 @@ stage.addEventListener('pointerup', endPointer);
 stage.addEventListener('pointercancel', endPointer);
 stage.addEventListener('wheel', e => { e.preventDefault(); zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0016)); }, { passive: false });
 
-// the province under a screen point, and the route an army would take there
+// the province and waypoint under a screen point, and the road an army would take there
 function dragTo(id, x, y) {
   const a = army(id);
   if (!a) { UI.drag = null; return; }
   const el = document.elementFromPoint(x, y), hit = el && el.closest && (el.closest('[data-p]') || el.closest('[data-a]'));
-  let to = null;
-  if (hit && hit.dataset.p != null) to = +hit.dataset.p;
-  else if (hit && hit.dataset.a != null) { const o = army(+hit.dataset.a); if (o) to = o.at != null ? o.at : o.mv.to; }
-  if (UI.drag && UI.drag.id === id && UI.drag.to === to) return;
-  const from = a.mv ? a.mv.to : a.at, dom = S.domOf(a);
+  const dom = S.domOf(a);
+  let to = null, node = null;
+  if (hit && hit.dataset.p != null) { to = +hit.dataset.p; const [mx, my] = mapPt(x, y); node = dom === 'land' ? S.nearestNode(to, mx, my) : to; }
+  else if (hit && hit.dataset.a != null) { const o = army(+hit.dataset.a); if (o) { node = dom === 'land' ? nodeOf(o) : S.NODE_P[nodeOf(o)]; to = S.NODE_P[node]; } }
+  if (UI.drag && UI.drag.id === id && UI.drag.node === node) return;
+  const from = routeStart(a);
   let route = null;
-  if (to != null && to !== from) {
+  if (node != null && node !== from) {
     if (dom === 'msl') route = S.missileOk(a, to).ok ? [to] : null;
-    else route = S.findRoute(a.owner, from, to, S.armySpeed(a), dom);
+    else route = S.nodeRoute(a.owner, from, node, S.armySpeed(a), dom);
   }
-  UI.drag = { id, to: to === from ? null : to, route };
+  UI.drag = node === from ? { id, to: null, node: null, route: null } : { id, to, node, route };
   drawMap(performance.now());
 }
 
 // ------------------------------------------------------------ selection and orders
-function handleTap(t) {
+function handleTap(t, x, y) {
   if (!UI.started) return;
   const a = t.closest && t.closest('[data-a]'), p = t.closest && t.closest('[data-p]');
   if (a) {
@@ -238,11 +261,18 @@ function handleTap(t) {
     if (ar) {
       const loc = ar.at != null ? ar.at : ar.mv.to;
       if (ar.owner === me()) { selectArmy(ar.id); return; }
-      if (UI.selA) { orderTo(loc); return; }
+      if (UI.selA) { orderTo(loc, nodeOf(ar), true); return; }
       selectProv(loc); return;
     }
   }
-  if (p) { const pid = +p.dataset.p; if (UI.selA) orderTo(pid); else selectProv(pid); return; }
+  if (p) {
+    const pid = +p.dataset.p;
+    if (!UI.selA) { selectProv(pid); return; }
+    // march to the waypoint nearest the tap; inside the army's own province only a tap close to one counts
+    const [mx, my] = mapPt(x, y), node = S.nearestNode(pid, mx, my), n = S.NODES[node];
+    orderTo(pid, node, Math.hypot(n[0] - mx, n[1] - my) * UI.view.scale < 22);
+    return;
+  }
   UI.selA = null; UI.selP = null; UI.confirm = ''; dirty();
 }
 function selectProv(pid) { UI.selP = pid; UI.selA = null; UI.confirm = ''; if (UI.tab !== 'map') setTab('map'); dirty(); }
@@ -252,110 +282,90 @@ function selectArmy(id) {
   if (UI.tab !== 'map') setTab('map');
   dirty();
 }
-function orderTo(pid) {
+function orderTo(pid, node, near) {
   const a = army(UI.selA);
   if (!a || a.owner !== me()) { UI.selA = null; selectProv(pid); return; }
-  if (pid === a.at && !a.mv) { UI.selA = null; selectProv(pid); return; }
+  const dom = S.domOf(a);
+  if (dom !== 'land') node = null;
+  if (pid === a.at && !a.mv && (dom !== 'land' || !near || node === a.n)) { UI.selA = null; selectProv(pid); return; }
   // a missile strike cannot be called back, so it takes a second tap
   if (S.domOf(a) === 'msl' && a.at != null) {
     const ok = S.missileOk(a, pid);
     if (ok.ok && ok.strike && UI.confirm !== 'msl:' + pid) { UI.selP = pid; UI.confirm = 'msl:' + pid; toast('Tap ' + PS[pid].name + ' again to launch', 'info'); dirty(); return; }
   }
-  const r = S.cmdMove(a.id, pid);
+  const r = S.cmdMove(a.id, pid, node);
   toast(r.msg + (r.eta ? ` (ETA ${fmtDur(r.eta)})` : ''), r.ok ? 'ok' : 'bad');
   UI.selP = pid; UI.confirm = ''; dirty();
 }
 
 // ------------------------------------------------------------ movement geometry
-// Troops cross between two provinces at the middle of their shared border (the longest stretch of it),
-// not along the straight line between the two city anchors.
-const CROSS = {};
-{
-  const best = {};
-  for (const b of MAP.borders) {
-    const nums = b.d.match(/-?[\d.]+/g).map(Number), pts = [];
-    for (let i = 0; i + 1 < nums.length; i += 2) pts.push([nums[i], nums[i + 1]]);
-    let len = 0;
-    for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
-    const k = Math.min(b.a, b.b) + ':' + Math.max(b.a, b.b);
-    if (best[k] && best[k] >= len) continue;
-    best[k] = len;
-    // the point halfway along the border
-    let half = len / 2, mid = pts[0];
-    for (let i = 1; i < pts.length; i++) {
-      const l = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
-      if (half <= l) { const t = l ? half / l : 0; mid = [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t]; break; }
-      half -= l;
-    }
-    CROSS[k] = mid;
-  }
+// Land armies march along the road network (S.NODES, S.ROADS) and stand on its nodes; node i < PS.length
+// is province i's city. Fleets and missiles go straight from city to city.
+const NXY = i => S.NODES[i];
+const nodeOf = a => a.mv ? a.mv.tn : a.n;
+const routeStart = a => a.mv ? a.mv.tn : a.n;
+// where an army is drawn: on its node, or part way along the current leg (with its heading)
+function armyPos(a) {
+  if (!a.mv) { const n = NXY(a.n); return { x: n[0], y: n[1], ang: null }; }
+  const A = NXY(a.mv.fn), B = NXY(a.mv.tn), k = a.mv.dur ? clamp(a.mv.t / a.mv.dur, 0, 1) : 0;
+  return { x: A[0] + (B[0] - A[0]) * k, y: A[1] + (B[1] - A[1]) * k, ang: Math.atan2(B[1] - A[1], B[0] - A[0]) * 180 / Math.PI };
 }
-// the points a unit passes on one leg: from anchor, border crossing (land only), to anchor
-function legPts(from, to, sea) {
-  const A = [PS[from].cx, PS[from].cy], B = [PS[to].cx, PS[to].cy];
-  const c = sea ? null : CROSS[Math.min(from, to) + ':' + Math.max(from, to)];
-  // skip a crossing that would be a big detour (odd-shaped borders)
-  if (c && Math.hypot(c[0] - A[0], c[1] - A[1]) + Math.hypot(B[0] - c[0], B[1] - c[1]) < 1.6 * Math.hypot(B[0] - A[0], B[1] - A[1]) + 4) return [A, c, B];
-  return [A, B];
-}
-// position and heading a fraction k of the way along a polyline
-function along(pts, k) {
-  let tot = 0;
-  const seg = [];
-  for (let i = 1; i < pts.length; i++) { const l = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]); seg.push(l); tot += l; }
-  let d = clamp(k, 0, 1) * tot;
-  for (let i = 0; i < seg.length; i++) {
-    if (d <= seg[i] || i === seg.length - 1) {
-      const t = seg[i] ? Math.min(1, d / seg[i]) : 0, a = pts[i], b = pts[i + 1];
-      return { x: a[0] + (b[0] - a[0]) * t, y: a[1] + (b[1] - a[1]) * t, ang: Math.atan2(b[1] - a[1], b[0] - a[0]) * 180 / Math.PI };
-    }
-    d -= seg[i];
-  }
-  return { x: pts[0][0], y: pts[0][1], ang: 0 };
-}
-// the whole polyline of a route: from a start point through each leg
-function routePts(a, start, list) {
-  const sea = S.domOf(a) === 'sea', msl = S.domOf(a) === 'msl', out = [start.pt];
-  let cur = start.pid;
-  for (const r of list) {
-    const lp = msl ? [null, [PS[r].cx, PS[r].cy]] : legPts(cur, r, sea);
-    for (let i = 1; i < lp.length; i++) out.push(lp[i]);
-    cur = r;
-  }
+// the polyline of the road ahead: from where the army is, through each node still to come
+function routePts(a, list) {
+  const p = armyPos(a), out = [[p.x, p.y]];
+  if (a.mv) out.push(NXY(a.mv.tn));
+  for (const r of list) out.push(NXY(r));
   return out;
 }
 
 // ------------------------------------------------------------ map drawing (per frame)
-// NATO-style symbol for what an army mostly is (drawn left of the count)
-const SYM = {
-  inf: 'M-14 -4.5H-4V4.5H-14ZM-14 -4.5L-4 4.5M-4 -4.5L-14 4.5',
-  mech: 'M-14 -4.5H-4V4.5H-14ZM-14 -4.5L-4 4.5M-4 -4.5L-14 4.5M-12 0a3 2.4 0 1 0 6 0a3 2.4 0 1 0 -6 0',
-  arm: 'M-14 -4.5H-4V4.5H-14ZM-12 0a3 2.4 0 1 0 6 0a3 2.4 0 1 0 -6 0',
-  art: 'M-14 -4.5H-4V4.5H-14ZM-10.6 0a1.6 1.6 0 1 0 3.2 0a1.6 1.6 0 1 0 -3.2 0',
-  air: 'M-14 -4.5H-4V4.5H-14ZM-13 1.5Q-11 -2.5 -9 1.5Q-7 -2.5 -5 1.5',
-  sea: 'M-9 -3.5V3M-11.5 -1.5H-6.5M-12 0.5Q-9 5 -6 0.5',
-  msl: 'M-14 0H-5M-7.5 -2.5L-5 0L-7.5 2.5',
+// Unit figures: a small silhouette of what an army mostly is (and its second arm, if that is a big
+// part of it), drawn left of the count. Each figure fits a 12 x 9 box around its centre.
+const FIG = {
+  inf: 'M-1 -3.3a1.3 1.3 0 1 0 2.6 0a1.3 1.3 0 1 0 -2.6 0ZM-1.6 -1.6H1.6L2 1.4H1.2L1.6 4.5H0.4L0 1.9L-0.4 4.5H-1.6L-1.2 1.4H-2ZM1.4 -1.1L5 -3.4L5.4 -2.8L1.8 -0.5Z',
+  abn: 'M-5.5 -1.2Q0 -8.5 5.5 -1.2ZM-5 -1.2L-0.8 2.2L-0.5 1.7L-4.2 -1.2ZM5 -1.2L0.8 2.2L0.5 1.7L4.2 -1.2ZM-0.9 1.6a0.9 0.9 0 1 0 1.8 0a0.9 0.9 0 1 0 -1.8 0ZM-1 2.4H1L0.8 4.6H-0.8Z',
+  mech: 'M-6 0.3L-4.3 -3H2.6L6 0.3V2.1H-6ZM-4.8 2.6a1.3 1.3 0 1 0 2.6 0a1.3 1.3 0 1 0 -2.6 0ZM-1.3 2.6a1.3 1.3 0 1 0 2.6 0a1.3 1.3 0 1 0 -2.6 0ZM2.2 2.6a1.3 1.3 0 1 0 2.6 0a1.3 1.3 0 1 0 -2.6 0Z',
+  arm: 'M-6 1.4H6L4.8 4.2H-4.8ZM-5.6 -1H5V1H-5.6ZM-3 -3.6H1.8L2.6 -1H-3.6ZM2 -2.8H6.6V-1.9H2Z',
+  art: 'M-3.4 0.6L5.4 -4.2L5.9 -3.4L-2.8 1.4ZM-6 1.2H1.2L2.2 2.4H-6ZM-2.6 2.8a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0Z',
+  flak: 'M-6 0.6H6V2.6H-6ZM3 -1.6H5.8V0.6H3ZM-3.4 -1H0.8V0.6H-3.4ZM-2.4 -1L0.6 -5L1.2 -4.6L-1.6 -0.8ZM-0.8 -1L2.2 -5L2.8 -4.6L0 -0.8ZM-4.6 3.2a1.1 1.1 0 1 0 2.2 0a1.1 1.1 0 1 0 -2.2 0ZM2.4 3.2a1.1 1.1 0 1 0 2.2 0a1.1 1.1 0 1 0 -2.2 0Z',
+  heli: 'M-3 -1.4Q1.5 -3.2 4 -0.4Q3 2 -2.2 1.6ZM-3 -0.6H-6.6V0.4H-3ZM-6.4 -2.2H-5.6V1.2H-6.4ZM-6 -4H5.6V-3.3H-6ZM0 -3.4H0.9V-1.8H0ZM-2.6 3H3.2V3.7H-2.6ZM-1.4 1.6H-0.7V3.2H-1.4ZM1.4 1.4H2.1V3.2H1.4Z',
+  ftr: 'M0 -4.8L0.8 -1.6L6 1.4V2.6L0.8 1.2L0.6 3.4L2 4.3V4.9L0 4.4L-2 4.9V4.3L-0.6 3.4L-0.8 1.2L-6 2.6V1.4L-0.8 -1.6Z',
+  bmb: 'M0 -4.8L1 -2.2V-1.2L6.5 0.6V1.9L1 1.2L0.8 3.4L2.6 4.4V5L0 4.5L-2.6 5V4.4L-0.8 3.4L-1 1.2L-6.5 1.9V0.6L-1 -1.2V-2.2Z',
+  pat: 'M-0.6 -4.4H0.6V4.2H-0.6ZM-6.2 -1.2H6.2V0.4H-6.2ZM-2.4 3.2H2.4V4.4H-2.4ZM-3.6 -2.8h1.2v3.4h-1.2zM2.4 -2.8h1.2v3.4h-1.2z',
+  ship: 'M-6.5 0.6H6.5L5 3.6H-5ZM-3 -1.6H2V0.6H-3ZM-1.1 -4.2H-0.1V-1.6H-1.1ZM2 -0.7H5.2V0H2Z',
+  sub: 'M-6 1Q-6 -1 -3 -1H4Q6.5 -1 6.5 1Q6.5 3 4 3H-3Q-6 3 -6 1ZM-1.2 -3.4H1.4V-1H-1.2ZM-0.2 -4.6H0.4V-3.4H-0.2Z',
+  msl: 'M-6 -0.9H3.4L6.4 0L3.4 0.9H-6ZM-6 -0.9L-6.6 -3H-5.2L-3.8 -0.9ZM-6 0.9L-6.6 3H-5.2L-3.8 0.9Z',
 };
-function symOf(a) {
-  const dom = S.domOf(a);
-  if (dom !== 'land') return dom;
-  const w = { inf: 0, veh: 0, art: 0, air: 0, mech: 0 };
-  for (const t of UT) if (a.u[t] > 0) { const c = UNITS[t].cls; const k = t === 'mech' ? 'mech' : c === 'heli' ? 'air' : c; if (w[k] !== undefined) w[k] += a.u[t] * UNITS[t].atk * UNITS[t].hp; }
-  let best = 'inf', bv = -1;
-  for (const k in w) if (w[k] > bv) { bv = w[k]; best = k; }
-  return best === 'veh' ? 'arm' : best;
+const FIG_OF = { inf: 'inf', sf: 'inf', abn: 'abn', mech: 'mech', arm: 'arm', art: 'art', flak: 'flak', heli: 'heli', ftr: 'ftr', bmb: 'bmb', pat: 'pat', pb: 'ship', dd: 'ship', cru: 'ship', sub: 'sub', msl: 'msl' };
+// the figures for an army: its strongest arm, plus a second one that makes up at least a quarter of it
+function figsOf(a) {
+  const w = {}; let tot = 0;
+  for (const t of UT) if (a.u[t] > 0) { const k = FIG_OF[t], v = a.u[t] * UNITS[t].atk * UNITS[t].hp; w[k] = (w[k] || 0) + v; tot += v; }
+  const ks = Object.keys(w).sort((x, y) => w[y] - w[x]);
+  if (!ks.length) return ['inf'];
+  return ks.length > 1 && w[ks[1]] >= tot * 0.25 ? ks.slice(0, 2) : ks.slice(0, 1);
 }
 function makeBadge(a) {
-  const n = nat(a.owner);
-  const dom = S.domOf(a);
   const g = mk('g', { class: 'bdg', 'data-a': a.id }, L.armies);
+  return { g, key: '', d: null };
+}
+// (re)draw a badge's contents: a pin down to its node, the frame, the figures and the count
+function fillBadge(e, a, stem) {
+  const n = nat(a.owner), dom = S.domOf(a), figs = figsOf(a);
+  const txt = String(Math.max(1, Math.round(S.unitCount(a.u))));
+  const key = figs.join('+') + '|' + txt + '|' + stem + '|' + n.color;
+  if (e.key === key) return;
+  e.key = key; e.g.textContent = '';
+  const fw = 13 * figs.length, tw = 5.8 * txt.length + 3, w = fw + tw + 4, x0 = -w / 2;
+  if (stem) mk('path', { class: 'pin', d: 'M-2.6 -7L0 -11L2.6 -7Z' }, e.g);
   // armies are tags, fleets are hulls, missile salvos are pills
-  if (dom === 'sea') mk('path', { class: 'hull', d: 'M-17 -6.5H17L13 6.5H-13Z', fill: n.color }, g);
-  else mk('rect', { x: -16, y: -6.5, width: 32, height: 13, rx: dom === 'msl' ? 6.5 : 2, fill: n.color }, g);
-  const sy = mk('path', { class: 'sym', d: '' }, g);
-  const t = mk('text', { x: 5, y: 3.3 }, g);
-  const d = mk('path', { class: 'dir', d: 'M0 -4L7 0L0 4Z', display: 'none' }, g);
-  return { g, t, d, sy, sym: '', last: '' };
+  if (dom === 'sea') mk('path', { class: 'hull', d: `M${x0 - 2} -7.5H${-x0 + 2}L${-x0 - 2} 7.5H${x0 + 2}Z`, fill: n.color }, e.g);
+  else mk('rect', { x: x0, y: -7.5, width: w, height: 15, rx: dom === 'msl' ? 7.5 : 2, fill: n.color }, e.g);
+  figs.forEach((f, i) => mk('path', { class: 'fig', d: FIG[f], transform: `translate(${(x0 + 8.5 + 13 * i).toFixed(1)} 0)` }, e.g));
+  const t = mk('text', { x: (x0 + fw + 2 + tw / 2).toFixed(1), y: 3.3 }, e.g);
+  t.textContent = txt;
+  e.d = mk('path', { class: 'dir', d: 'M0 -4L7 0L0 4Z', display: 'none' }, e.g);
+  e.w = w;
 }
 function drawMap(now) {
   const g = G(), bk = UI.bk;
@@ -380,42 +390,44 @@ function drawMap(now) {
   L.selOut.setAttribute('d', UI.selP != null ? MAP.provinces[UI.selP].d : '');
   L.selOut.setAttribute('stroke-width', (2.4 * Math.min(1.6, bk * UI.view.scale) / UI.view.scale).toFixed(2));
 
-  // armies
+  // armies stand on road nodes; several on one node stack below it
   const groups = {};
-  for (const a of g.armies) if (a.at != null) (groups[a.at] = groups[a.at] || []).push(a);
+  for (const a of g.armies) if (!a.mv) (groups[a.n] = groups[a.n] || []).push(a);
   const live = new Set();
   for (const a of g.armies) {
     live.add(a.id);
     let e = badges.get(a.id);
     if (!e) { e = makeBadge(a); badges.set(a.id, e); }
-    let x, y, ang = null;
-    if (a.at != null) {
-      const grp = groups[a.at], i = grp.indexOf(a), n = grp.length, per = 3;
+    const pos = armyPos(a);
+    let x = pos.x, y = pos.y + 11 * bk, stem = true;
+    if (!a.mv) {
+      const grp = groups[a.n], i = grp.indexOf(a), n = grp.length, per = 3;
       const row = Math.floor(i / per), col = i % per, inRow = Math.min(per, n - row * per);
-      x = PS[a.at].cx + (col - (inRow - 1) / 2) * 35 * bk;
-      y = PS[a.at].cy + (9 + row * 15) * bk;
-    } else {
-      const k = a.mv.dur ? a.mv.t / a.mv.dur : 0;
-      const pos = along(S.domOf(a) === 'msl' ? [[PS[a.mv.from].cx, PS[a.mv.from].cy], [PS[a.mv.to].cx, PS[a.mv.to].cy]] : legPts(a.mv.from, a.mv.to, S.domOf(a) === 'sea'), k);
-      x = pos.x; y = pos.y + 9 * bk; ang = pos.ang;
+      x += (col - (inRow - 1) / 2) * 36 * bk;
+      y += row * 17 * bk;
+      stem = n === 1 || (row === 0 && col === Math.floor((inRow - 1) / 2));
     }
-    const sym = symOf(a);
-    if (e.sym !== sym) { e.sy.setAttribute('d', SYM[sym]); e.sym = sym; }
+    fillBadge(e, a, stem);
     e.g.setAttribute('transform', `translate(${x.toFixed(1)} ${y.toFixed(1)}) scale(${bk.toFixed(4)})`);
-    const txt = String(Math.max(1, Math.round(S.unitCount(a.u))));
-    if (e.last !== txt) { e.t.textContent = txt; e.last = txt; }
     const cls = 'bdg' + (a.id === UI.selA ? ' sel' : '') + (a.owner !== me() ? ' foe' : '') + (a.strike ? ' strike' : '');
     if (e.g.getAttribute('class') !== cls) e.g.setAttribute('class', cls);
-    if (ang === null) e.d.setAttribute('display', 'none');
-    else { e.d.setAttribute('display', ''); e.d.setAttribute('transform', `translate(16 0) rotate(${ang.toFixed(0)}) translate(-1 0)`); }
+    if (pos.ang === null) e.d.setAttribute('display', 'none');
+    else { e.d.setAttribute('display', ''); e.d.setAttribute('transform', `translate(${(e.w / 2 + 1).toFixed(1)} 0) rotate(${pos.ang.toFixed(0)}) translate(-1 0)`); }
   }
   for (const [id, e] of badges) if (!live.has(id)) { e.g.remove(); badges.delete(id); }
+  // where each province's fighting is: around the armies standing in it, else its city
+  const spot = pid => {
+    let sx = 0, sy = 0, k = 0;
+    for (const a of g.armies) if (a.at === pid && !a.mv) { const n = NXY(a.n); sx += n[0]; sy += n[1]; k++; }
+    return k ? [sx / k, sy / k] : [PS[pid].px, PS[pid].py];
+  };
 
   // battles, sieges
   L.fx.textContent = '';
   const pulse = 1 + 0.18 * Math.sin(now / 160);
   for (const p of g.provs) {
-    const d = PS[p.id];
+    if (!p.battle && !p.cap) continue;
+    const [sx, sy] = spot(p.id), d = { cx: sx, cy: sy };
     if (p.battle) {
       mk('circle', { cx: d.cx, cy: d.cy + 2 * bk, r: (13 * pulse * bk).toFixed(2), class: 'fxr', stroke: 'var(--warn)', 'stroke-width': (2 * bk).toFixed(2) }, L.fx);
       const s = 5 * bk, cx = d.cx, cy = d.cy + 2 * bk;
@@ -436,29 +448,15 @@ function drawMap(now) {
     if (a.owner !== me() || (!a.route.length && !a.mv)) continue;
     const sel = a.id === UI.selA;
     if (!sel && !a.mv) continue;
-    let start;
-    if (a.mv) {
-      const k = a.mv.dur ? a.mv.t / a.mv.dur : 0, leg = S.domOf(a) === 'msl' ? [[PS[a.mv.from].cx, PS[a.mv.from].cy], [PS[a.mv.to].cx, PS[a.mv.to].cy]] : legPts(a.mv.from, a.mv.to, S.domOf(a) === 'sea');
-      const p = along(leg, k);
-      // the rest of the current leg, then the queued legs
-      const pts = [[p.x, p.y]];
-      let acc = 0; const segs = [];
-      for (let i = 1; i < leg.length; i++) { const l = Math.hypot(leg[i][0] - leg[i - 1][0], leg[i][1] - leg[i - 1][1]); segs.push(l); acc += l; }
-      let dd = k * acc;
-      for (let i = 0; i < segs.length; i++) { if (dd < segs[i]) { for (let j = i + 1; j < leg.length; j++) pts.push(leg[j]); break; } dd -= segs[i]; }
-      if (pts.length === 1) pts.push(leg[leg.length - 1]);
-      start = { pid: a.mv.to, pt: pts[pts.length - 1] };
-      const tail = routePts(a, start, a.route);
-      line(pts.concat(tail.slice(1)), 'route' + (sel ? '' : ' faint'), sel ? 1.9 : 1.2);
-    } else line(routePts(a, { pid: a.at, pt: [PS[a.at].cx, PS[a.at].cy] }, a.route), 'route' + (sel ? '' : ' faint'), sel ? 1.9 : 1.2);
+    line(routePts(a, a.route), 'route' + (sel ? '' : ' faint'), sel ? 1.9 : 1.2);
   }
   // drag-to-move preview
   if (UI.drag && UI.drag.to != null) {
     const a = army(UI.drag.id);
     if (a) {
-      const from = a.mv ? a.mv.to : a.at;
-      if (UI.drag.route) line(routePts(a, { pid: from, pt: [PS[from].cx, PS[from].cy] }, UI.drag.route), 'route drag', 2.4);
-      const d = PS[UI.drag.to];
+      const from = routeStart(a), dn = NXY(UI.drag.node);
+      if (UI.drag.route) line(routePts(a, UI.drag.route), 'route drag', 2.4);
+      const d = { cx: dn[0], cy: dn[1] };
       mk('circle', { cx: d.cx, cy: d.cy, r: (7 / UI.view.scale).toFixed(2), class: 'route drag' + (UI.drag.route ? '' : ' bad'), fill: 'none', 'stroke-width': (2.2 / UI.view.scale).toFixed(2) }, L.routes);
       const eta = UI.drag.route ? (a.mv ? a.mv.dur - a.mv.t : 0) + S.routeTime(a, UI.drag.route, from) : null;
       const lab = mk('text', { x: d.cx, y: (d.cy - 11 / UI.view.scale).toFixed(2), class: 'dragEta', 'font-size': (12 / UI.view.scale).toFixed(2), 'stroke-width': (3 / UI.view.scale).toFixed(2) }, L.routes);
@@ -505,8 +503,8 @@ function statusTags(a, b) {
   return h;
 }
 function etaOf(a) {
-  if (a.mv) return Math.max(0, a.mv.dur - a.mv.t) + S.routeTime(a, a.route, a.mv.to);
-  return S.routeTime(a, a.route, a.at);
+  if (a.mv) return Math.max(0, a.mv.dur - a.mv.t) + S.routeTime(a, a.route, a.mv.tn);
+  return S.routeTime(a, a.route, a.n);
 }
 
 function provCard(pid) {
@@ -654,7 +652,7 @@ function armyCard(a) {
     h += `<button class="btn" data-act="split" data-a="${a.id}" data-k="half">Split &frac12;</button><button class="btn" data-act="split" data-a="${a.id}" data-k="quarter">Split &frac14;</button>`;
     const types = UT.filter(t => a.u[t] >= 0.5);
     if (types.length > 1) for (const t of types) h += `<button class="btn" data-act="split" data-a="${a.id}" data-k="${t}">Detach ${UNITS[t].s}</button>`;
-    if (g.armies.filter(x => x.owner === a.owner && x.at === a.at && !x.mv && !x.strike && S.domOf(x) === dom).length > 1) h += `<button class="btn" data-act="merge" data-p="${a.at}" data-k="${dom}">Merge all ${dom === 'sea' ? 'fleets' : dom === 'msl' ? 'salvos' : 'armies'} here</button>`;
+    if (g.armies.filter(x => x.owner === a.owner && x.at === a.at && x.n === a.n && !x.mv && !x.strike && S.domOf(x) === dom).length > 1) h += `<button class="btn" data-act="merge" data-p="${a.at}" data-n="${a.n}" data-k="${dom}">Merge all ${dom === 'sea' ? 'fleets' : dom === 'msl' ? 'salvos' : 'armies'} here</button>`;
   }
   h += `<button class="btn" data-act="selprov" data-p="${here}">Province</button><button class="btn warn" data-act="disband" data-a="${a.id}">Disband</button></div>`;
   return h;
@@ -665,7 +663,7 @@ function mapPanel() {
   if (UI.selA) { const a = army(UI.selA); if (a) return armyCard(a); UI.selA = null; }
   if (UI.selP != null) return provCard(UI.selP);
   return `<div class="hd"><h3>Orders</h3></div>
-  <p class="note">Drag an army badge onto a province to send it there (or tap the badge, then the province). Tap any province for details, recruiting and city buildings. Pinch or scroll to zoom; city names appear as you zoom in.</p>
+  <p class="note">Troops march along the roads. Drag an army onto any waypoint or city to send it there (or tap the army, then the spot). Tap any province for details, recruiting and city buildings. Pinch or scroll to zoom; city names appear as you zoom in.</p>
   <div class="btns"><button class="btn" data-act="homefocus">Go to my capital</button></div>`;
 }
 
@@ -791,7 +789,7 @@ function intelPanel() {
   h += `<div class="opts">World runs while away: ${awaySeg(g.opts.away, 'away')}</div>`;
   h += '<div class="btns"><button class="btn" data-act="save">Save game</button><button class="btn warn" data-act="newgame">New game</button></div>';
   h += `<details><summary>How to play</summary>
-  <p>Drag an army badge onto a province to send it there, or tap the badge and then the province. The dashed line shows the route, and red means there is no way through. Armies cross at the border between provinces. One that runs into a fight on the way stops to fight, then carries on once it wins. Armies need passage rights to cross land you are at peace with.</p>
+  <p>Drag an army badge onto a province to send it there, or tap the badge and then the province. Land armies only travel along the road network (the thin lines; the small triangles are waypoints) and can stop and dig in at any waypoint or city. The dashed line shows the route, and red means there is no way through. One that runs into a fight on the way stops to fight, then carries on once it wins. Armies need passage rights to cross land you are at peace with.</p>
   <p>A badge's symbol shows what an army mostly is: a crossed box for infantry, an oval for armor, a dot for artillery, wings for aircraft. Its card lists every unit with attack, HP and speed (research included), plus what it is strong against and what it should avoid.</p>
   <p>Declare war from the Diplomacy tab. A province falls when its garrison is beaten and you hold it long enough. Fortifications, bunkers and home soil all make that take longer.</p>
   <p>Each province is a city region that produces cash, manpower and one resource. Build in its city: an army base to train artillery and armor, an air base for air wings, defences to hold it, and industry to grow. Construction takes time, so build before the enemy comes.</p>
@@ -947,7 +945,7 @@ function afterStart() {
   closeModal();
   if (UI.W) { if (m >= 0) focusNation(m); else fitView(); }
   renderHeader(); renderPanel(); drawMap(performance.now());
-  if (m >= 0) toast('Your armies are the numbered badges. Drag one onto a province to send it there.', 'ok');
+  if (m >= 0) toast('Your armies are the badges: the figure shows the troop type, the number the unit count. Drag one along the roads to move it.', 'ok');
 }
 function saveNow(quiet) {
   try { stamp(); localStorage.setItem(SAVE_KEY, S.serialize()); if (!quiet) toast('Game saved', 'ok'); }
@@ -1041,7 +1039,7 @@ document.addEventListener('click', e => {
     case 'selprov': selectProv(+d.p); break;
     case 'stop': S.cmdStop(+d.a); toast('Halting at the next stop', 'ok'); dirty(); break;
     case 'split': { const r = S.cmdSplit(+d.a, d.k); toast(r.msg, r.ok ? 'ok' : 'bad'); if (r.ok) { UI.selA = r.id; } dirty(); break; }
-    case 'merge': { const r = S.cmdMerge(m, +d.p, d.k); toast(r.msg, r.ok ? 'ok' : 'bad'); if (r.ok) UI.selA = r.id; dirty(); break; }
+    case 'merge': { const r = S.cmdMerge(m, +d.p, d.k, d.n != null ? +d.n : null); toast(r.msg, r.ok ? 'ok' : 'bad'); if (r.ok) UI.selA = r.id; dirty(); break; }
     case 'disband': S.cmdDisband(+d.a); UI.selA = null; toast('Army disbanded', 'ok'); dirty(); break;
     case 'homefocus': { const c = nat(m).capital; selectProv(c); focusOn(c, 1.8); break; }
     case 'focusnat': focusNation(+d.n); break;

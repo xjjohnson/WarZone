@@ -211,6 +211,19 @@ for (const [s1, n1, s2, n2] of SEA_LINKS) {
   if (!EDGE[a.id * NP + b.id]) EDGE[a.id * NP + b.id] = EDGE[b.id * NP + a.id] = Math.hypot(a.cx - b.cx, a.cy - b.cy);
 }
 const nbrsOf = (dom, u) => dom === 'sea' ? SEA_NB[u] : PS[u].nbrs;
+// Road network (buildroads.mjs): node i < NP is province i's city, the rest are waypoints.
+// Land armies travel only along roads and can stop at any node; fleets and missiles go city to city.
+const NODES = MAPD.nodes, NN = NODES.length;
+const NODE_P = NODES.map(n => n[2]);
+const RADJ = Array.from({ length: NN }, () => []);
+const RLEN = new Map();
+MAPD.roads.forEach(([a, b, d]) => {
+  const w = d || Math.hypot(NODES[a][0] - NODES[b][0], NODES[a][1] - NODES[b][1]);
+  RADJ[a].push(b); RADJ[b].push(a); RLEN.set(a * NN + b, w); RLEN.set(b * NN + a, w);
+});
+const NODES_OF = PS.map(() => []);
+NODES.forEach((n, i) => NODES_OF[n[2]].push(i));
+const ROAD_K = 0.85;    // roads wind a little, so road distance is scaled to keep the old travel times
 const MSL_RANGE = 260;     // how far (map units) a missile flies
 const mslDist = (a, b) => Math.hypot(PS[a].cx - PS[b].cx, PS[a].cy - PS[b].cy);
 // Alaska and Hawaii are drawn as insets, so map distance means nothing across them
@@ -482,7 +495,7 @@ function prodTick(dt) {
     if (it.left <= 0) {
       p.q.shift();
       const dom = UNITS[it.type].dom;
-      let a = G.armies.find(x => x.owner === p.owner && x.at === p.id && !x.mv && !x.route.length && !x.strike && domOf(x) === dom);
+      let a = G.armies.find(x => x.owner === p.owner && x.at === p.id && x.n === p.id && !x.mv && !x.route.length && !x.strike && domOf(x) === dom);
       if (a) a.u[it.type] += 1;
       else { a = newArmy(p.owner, p.id); a.u[it.type] = 1; }
     }
@@ -517,7 +530,7 @@ function cmdCancelResearch(nat) {
   return { ok: true, msg: `${TECH[k].n} cancelled, half refunded` };
 }
 function newArmy(owner, at) {
-  const a = { id: G.nextArmy++, owner, u: emptyU(), at, mv: null, route: [], since: G.t };
+  const a = { id: G.nextArmy++, owner, u: emptyU(), at, n: at, mv: null, route: [], since: G.t };
   G.armies.push(a);
   return a;
 }
@@ -575,11 +588,55 @@ function findRoute(nat, from, to, speed, dom) {
   if (dom === 'sea' && !PS[to].coast) return null;
   return pathTo(dijkstra(nat, from, speed, to, dom), from, to);
 }
-function routeTime(a, route, startPid) {
-  const sp = armySpeed(a); let t = 0, cur = startPid;
-  if (domOf(a) === 'msl') { for (const r of route) { t += mslDist(cur, r) / sp; cur = r; } return t; }
-  for (const r of route) { t += edgeTime(cur, r, sp); cur = r; }
+// time to travel a node route (land: roads; sea: city to city; missiles: straight)
+function legTime(a, u, v, sp) {
+  const dom = domOf(a);
+  if (dom === 'msl') return mslDist(NODE_P[u], NODE_P[v]) / sp;
+  if (dom === 'sea') return edgeTime(NODE_P[u], NODE_P[v], sp);
+  return (RLEN.get(u * NN + v) || 100) * ROAD_K / sp;
+}
+function routeTime(a, route, startNode) {
+  const sp = armySpeed(a); let t = 0, cur = startNode;
+  for (const r of route) { t += legTime(a, cur, r, sp); cur = r; }
   return t;
+}
+// shortest road path between two nodes, only through the given provinces
+function roadPath(fromN, toN, allowed) {
+  if (fromN === toN) return [];
+  const dist = new Map([[fromN, 0]]), prev = new Map(), done = new Set();
+  const open = [fromN];
+  while (open.length) {
+    let bi = 0;
+    for (let i = 1; i < open.length; i++) if (dist.get(open[i]) < dist.get(open[bi])) bi = i;
+    const u = open[bi]; open[bi] = open[open.length - 1]; open.pop();
+    if (done.has(u)) continue;
+    done.add(u);
+    if (u === toN) break;
+    for (const v of RADJ[u]) {
+      if (done.has(v) || !allowed.has(NODE_P[v])) continue;
+      const d = dist.get(u) + RLEN.get(u * NN + v);
+      if (!(dist.get(v) <= d)) { dist.set(v, d); prev.set(v, u); open.push(v); }
+    }
+  }
+  if (!prev.has(toN)) return null;
+  const r = []; let c = toN;
+  while (c !== fromN) { r.unshift(c); c = prev.get(c); }
+  return r;
+}
+// node route from node fromN to node toN: the province route picks the corridor, the roads inside it the way
+function nodeRoute(nat, fromN, toN, speed, dom) {
+  const fp = NODE_P[fromN], tp = NODE_P[toN];
+  const pr = findRoute(nat, fp, tp, speed, dom);
+  if (!pr) return null;
+  if (dom === 'sea') return pr;              // fleets sail from city to city (a city's node id is its province id)
+  return roadPath(fromN, toN, new Set([fp, ...pr]));
+}
+// the node an army goes to in a province: the given one if it lies there, else the city
+const nodeIn = (pid, node) => node != null && NODE_P[node] === pid ? node : pid;
+function nearestNode(pid, x, y) {
+  let best = pid, bd = Infinity;
+  for (const i of NODES_OF[pid]) { const d = (NODES[i][0] - x) ** 2 + (NODES[i][1] - y) ** 2; if (d < bd) { bd = d; best = i; } }
+  return best;
 }
 // can this missile army fly to dest: a strike on an enemy, or a transfer to friendly ground
 function missileOk(a, dest) {
@@ -590,7 +647,7 @@ function missileOk(a, dest) {
   if (o === a.owner || allied(a.owner, o)) return { ok: true, strike: false };
   return { ok: false, msg: 'Missiles can only strike a nation you are at war with' };
 }
-function orderMove(a, dest) {
+function orderMove(a, dest, node) {
   const sp = armySpeed(a), dom = domOf(a);
   a.held = null;
   if (dom === 'msl') {
@@ -598,41 +655,46 @@ function orderMove(a, dest) {
     const m = missileOk(a, dest);
     if (!m.ok) return m;
     const dur = mslDist(a.at, dest) / sp;
-    a.mv = { from: a.at, to: dest, t: 0, dur }; a.at = null; a.route = []; a.strike = m.strike;
+    a.mv = { from: a.at, to: dest, fn: a.n, tn: dest, t: 0, dur }; a.at = null; a.route = []; a.strike = m.strike;
     return { ok: true, msg: m.strike ? 'Missiles launched' : 'Missiles relocating', eta: dur };
   }
+  if (dom === 'sea' && !PS[dest].coast) return { ok: false, msg: 'Ships can only sail to coastal provinces.' };
+  const target = dom === 'sea' ? dest : nodeIn(dest, node);
   if (!a.mv) {
-    if (a.at === dest) { a.route = []; return { ok: true, msg: 'Holding position' }; }
-    if (dom === 'sea' && !PS[dest].coast) return { ok: false, msg: 'Ships can only sail to coastal provinces.' };
-    const r = findRoute(a.owner, a.at, dest, sp, dom);
+    if (a.n === target || (a.at === dest && node == null)) { a.route = []; return { ok: true, msg: 'Holding position' }; }
+    const r = nodeRoute(a.owner, a.n, target, sp, dom);
     if (!r) return { ok: false, msg: dom === 'sea' ? 'No sea route there. Ships need open water and permission to pass.' : 'No permitted route. Declare war or get passage rights first.' };
+    const eta = routeTime(a, r, a.n);
     a.route = r; startNext(a);
-    return { ok: true, msg: 'Moving out', eta: routeTime(a, r, a.at) };
+    return { ok: true, msg: 'Moving out', eta };
   }
   // already on the road: either carry on to the next stop, or turn around
-  const fwdRoute = findRoute(a.owner, a.mv.to, dest, sp, dom) || (a.mv.to === dest ? [] : null);
-  const fwdCost = a.mv.dur - a.mv.t + (fwdRoute ? routeTime(a, fwdRoute, a.mv.to) : Infinity);
+  const fwdRoute = a.mv.tn === target ? [] : nodeRoute(a.owner, a.mv.tn, target, sp, dom);
+  const fwdCost = a.mv.dur - a.mv.t + (fwdRoute ? routeTime(a, fwdRoute, a.mv.tn) : Infinity);
   let backRoute = null, backCost = Infinity;
   if (canEnter(a.owner, a.mv.from)) {
-    backRoute = a.mv.from === dest ? [] : findRoute(a.owner, a.mv.from, dest, sp, dom);
-    if (backRoute) backCost = a.mv.t + routeTime(a, backRoute, a.mv.from);
+    backRoute = a.mv.fn === target ? [] : nodeRoute(a.owner, a.mv.fn, target, sp, dom);
+    if (backRoute) backCost = a.mv.t + routeTime(a, backRoute, a.mv.fn);
   }
   if (fwdCost === Infinity && backCost === Infinity) return { ok: false, msg: 'No permitted route.' };
   if (backCost < fwdCost) {
-    const { from, to, t, dur } = a.mv;
-    a.mv = { from: to, to: from, t: dur - t, dur };
+    const { from, to, fn, tn, t, dur } = a.mv;
+    a.mv = { from: to, to: from, fn: tn, tn: fn, t: dur - t, dur };
+    if (from === to) a.at = from;
     a.route = backRoute;
     return { ok: true, msg: 'Turning back', eta: backCost };
   }
   a.route = fwdRoute;
   return { ok: true, msg: 'Redirected', eta: fwdCost };
 }
+// set off along the next leg; inside one province the army stays there (and can be fought)
 function startNext(a) {
   const next = a.route.shift();
   if (next === undefined) { a.route = []; return; }
-  if (!canEnter(a.owner, next)) { a.route = []; return; }
-  a.mv = { from: a.at, to: next, t: 0, dur: edgeTime(a.at, next, armySpeed(a)) };
-  a.at = null;
+  const np = NODE_P[next], here = NODE_P[a.n];
+  if (!canEnter(a.owner, np)) { a.route = []; return; }
+  a.mv = { from: here, to: np, fn: a.n, tn: next, t: 0, dur: legTime(a, a.n, next, armySpeed(a)) };
+  a.at = np === here ? here : null;
 }
 function hostileHere(nat, pid) {
   const p = G.provs[pid];
@@ -647,7 +709,7 @@ function resumeMarches() {
     if (a.route.length) { a.held = null; continue; }
     if (hostileHere(a.owner, a.at)) continue;
     const rest = a.held; a.held = null;
-    if (rest.every(pid => canEnter(a.owner, pid))) { a.route = rest; startNext(a); }
+    if (rest.every(n => canEnter(a.owner, NODE_P[n]))) { a.route = rest; startNext(a); }
   }
 }
 function moveTick(dt) {
@@ -655,17 +717,19 @@ function moveTick(dt) {
     if (!a.mv) continue;
     a.mv.t += dt;
     if (a.mv.t >= a.mv.dur) {
-      a.at = a.mv.to; a.mv = null; a.since = G.t;
+      const entered = a.mv.from !== a.mv.to, over = a.mv.t - a.mv.dur;
+      a.at = a.mv.to; a.n = a.mv.tn; a.mv = null;
+      if (entered || !a.route.length) a.since = G.t;
       // engaged: stop and fight, then carry on to the destination once the way is clear
       if (hostileHere(a.owner, a.at)) { if (a.route.length) a.held = a.route; a.route = []; }
-      else if (a.route.length) startNext(a);
+      else if (a.route.length) { startNext(a); if (a.mv) a.mv.t = Math.min(over, a.mv.dur); }
     }
   }
 }
 // pull armies out of territory they no longer have the right to stand in
 function enforceBorders() {
   for (const a of G.armies) {
-    if (a.at == null || a.strike) continue;
+    if (a.at == null || a.strike || a.mv) continue;
     if (canEnter(a.owner, a.at)) continue;
     // nearest tile we may stand on
     const dom = domOf(a);
@@ -680,7 +744,10 @@ function enforceBorders() {
       }
       frontier = nxt;
     }
-    if (dest) { a.route = dest; startNext(a); }
+    if (!dest) continue;
+    const last = dest[dest.length - 1];
+    a.route = dom === 'sea' ? dest : (roadPath(a.n, last, new Set([a.at, ...dest])) || []);
+    if (a.route.length) startNext(a);
   }
 }
 
@@ -1310,7 +1377,7 @@ function aiResearch(n) {
 // ---------------------------------------------------------------- AI : military
 function mergeIdle(nid) {
   const groups = {};
-  for (const a of G.armies) if (a.owner === nid && a.at != null && !a.mv && !a.route.length && !a.strike) { const k = a.at + domOf(a); (groups[k] = groups[k] || []).push(a); }
+  for (const a of G.armies) if (a.owner === nid && a.at != null && !a.mv && !a.route.length && !a.strike) { const k = a.n + domOf(a); (groups[k] = groups[k] || []).push(a); }
   for (const pid in groups) {
     const g = groups[pid];
     if (g.length < 2) continue;
@@ -1750,10 +1817,10 @@ function cmdCancelBuild(nat, pid) {
   for (const k in c) n[k] += c[k] / 2;
   return { ok: true, msg: `${BLD[it.k].n} cancelled, half refunded` };
 }
-function cmdMove(aid, dest) {
+function cmdMove(aid, dest, node) {
   const a = G.armies.find(x => x.id === aid);
   if (!a) return { ok: false, msg: 'Army not found' };
-  return orderMove(a, dest);
+  return orderMove(a, dest, node);
 }
 function cmdStop(aid) {
   const a = G.armies.find(x => x.id === aid);
@@ -1761,17 +1828,18 @@ function cmdStop(aid) {
 }
 function cmdSplit(aid, mode) {
   const a = G.armies.find(x => x.id === aid);
-  if (!a || a.at == null) return { ok: false, msg: 'Army must be stationary' };
+  if (!a || a.at == null || a.mv) return { ok: false, msg: 'Army must be stationary' };
   const b = emptyU();
   if (mode === 'half') { for (const t of UT) { b[t] = a.u[t] / 2; a.u[t] -= b[t]; } }
   else if (mode === 'quarter') { for (const t of UT) { b[t] = a.u[t] / 4; a.u[t] -= b[t]; } }
   else if (UT.includes(mode)) { b[mode] = a.u[mode]; a.u[mode] = 0; }
   if (unitCount(b) < 0.5 || unitCount(a.u) < 0.5) { for (const t of UT) a.u[t] += b[t]; return { ok: false, msg: 'Too small to split' }; }
-  const n = newArmy(a.owner, a.at); n.u = b;
+  const n = newArmy(a.owner, a.at); n.u = b; n.n = a.n;
   return { ok: true, msg: 'Army split', id: n.id };
 }
-function cmdMerge(nat, pid, dom) {
+function cmdMerge(nat, pid, dom, node) {
   let list = G.armies.filter(a => a.owner === nat && a.at === pid && !a.mv && !a.strike);
+  if (node != null) list = list.filter(a => a.n === node);
   // armies, fleets and missiles do not mix: merge the kind asked for, or the most common one here
   if (!dom) { const c = {}; for (const a of list) c[domOf(a)] = (c[domOf(a)] || 0) + 1; dom = Object.keys(c).sort((x, y) => c[y] - c[x])[0]; }
   list = list.filter(a => domOf(a) === dom);
@@ -1830,7 +1898,7 @@ function step(dt) {
 }
 
 // ---------------------------------------------------------------- setup / save
-const SAVE_V = 4;
+const SAVE_V = 5;
 // the main province of a state: the one with the most people
 const mainOf = st => byState[st].reduce((a, b) => (PS[b].pop > PS[a].pop ? b : a));
 const startStock = f => ({ cash: 400 * f, man: 60 * f, sup: 90 * f, comp: 90 * f, fuel: 70 * f, elec: 40 * f, rare: 40 * f, rp: 30 * f, tech: {}, rs: null });
@@ -1896,7 +1964,7 @@ return {
   get G() { return G; }, get D() { return D; },
   newGame, step, serialize, load, saveOk, refresh, computeRates,
   atWar, allied, hasTreaty, hasAccess, truceLeft, opinion, canEnter, borders,
-  unitPow, unitCount, armySpeed, routeTime, findRoute, predictAttack, defBonus, maxGar,
+  unitPow, unitCount, armySpeed, routeTime, findRoute, nodeRoute, nearestNode, nodeIn, NODES, NODE_P, NODES_OF, ROADS: MAPD.roads, predictAttack, defBonus, maxGar,
   buildCost, buildTime, unitCost, canPay, provRates, canTrain, trainTime,
   cmdRecruit, cmdBuild, cmdCancelBuild, cmdMove, cmdStop, cmdSplit, cmdMerge, cmdDisband,
   diplo, answerProposal, caretaker, evalProposal, warStat, enemiesOf, alliesOf, pers,
