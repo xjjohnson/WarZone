@@ -4,7 +4,8 @@ const { JSDOM, VirtualConsole } = require('jsdom');
 const html = fs.readFileSync(__dirname + '/frontline-usa.html', 'utf8');
 const errors = [];
 const vc = new VirtualConsole();
-vc.on('jsdomError', e => errors.push('jsdomError: ' + (e.detail && e.detail.stack || e.message)));
+// jsdom has no canvas, so the terrain art is skipped there (expected, not an error)
+vc.on('jsdomError', e => { if (!/HTMLCanvasElement.*getContext/.test(e.message)) errors.push('jsdomError: ' + (e.detail && e.detail.stack || e.message)); });
 vc.on('error', e => errors.push('console.error: ' + e));
 const dom = new JSDOM(html, { runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole: vc, url: 'https://example.test/', resources: undefined,
   beforeParse(w) {

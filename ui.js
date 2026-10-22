@@ -56,6 +56,9 @@ function buildMap() {
   mk('path', { d: 'M48 0H0V48', fill: 'none', stroke: 'var(--grid)', 'stroke-width': 1 }, pat);
   mk('rect', { x: -3000, y: -3000, width: 7000, height: 7000, fill: 'var(--sea)' }, svg);
   mk('rect', { x: -3000, y: -3000, width: 7000, height: 7000, fill: 'url(#grid)' }, svg);
+  L.terr = mk('image', { x: 0, y: 0, width: MAP.w, height: MAP.h, preserveAspectRatio: 'none', class: 'terr' }, svg);
+  mk('rect', { x: 0, y: 0, width: MAP.w, height: MAP.h, class: 'terrshade' }, svg);
+  UI.terrainDone = false;
   for (const k of ['provs', 'borders', 'lanes', 'roads', 'labels', 'hits', 'sel', 'routes', 'fx', 'armies']) L[k] = mk('g', {}, svg);
   MAP.provinces.forEach(p => {
     provEls[p.id] = mk('path', { d: p.d, class: 'prov', 'data-p': p.id }, L.provs);
@@ -84,6 +87,140 @@ function buildMap() {
   L.selOut = mk('path', { class: 'selout', d: '' }, L.sel);
   L.capDots = [];
   fillCache.length = 0; bdCache.length = 0;
+}
+
+
+// ------------------------------------------------------------ terrain art
+// The land is painted once into a canvas and shown as an image under the nation colours: a biome colour per
+// state (blended across borders by drawing small and scaling up), relief from hand-placed mountain ridges with
+// noise and hill shading, fine grain, and a shallow-water glow off the coast. No image files are needed.
+const BIOME_OF = { WA: 'forest', OR: 'forest', CA: 'farm', NV: 'desert', AZ: 'desert', NM: 'desert', UT: 'dry', ID: 'mount', MT: 'prairie', WY: 'dry',
+  CO: 'prairie', ND: 'prairie', SD: 'prairie', NE: 'prairie', KS: 'prairie', OK: 'prairie', TX: 'prairie', MN: 'forest', IA: 'farm', MO: 'farm',
+  AR: 'forest', LA: 'swamp', WI: 'forest', IL: 'farm', MI: 'forest', IN: 'farm', OH: 'farm', KY: 'forest', TN: 'forest', MS: 'swamp', AL: 'forest',
+  GA: 'forest', FL: 'tropic', SC: 'forest', NC: 'forest', VA: 'forest', WV: 'forest', PA: 'forest', NY: 'forest', VT: 'forest', NH: 'forest',
+  ME: 'forest', MA: 'forest', RI: 'forest', CT: 'forest', NJ: 'farm', DE: 'farm', MD: 'forest', DC: 'farm', AK: 'tundra', HI: 'tropic' };
+const BIOME_RGB = { forest: [74, 112, 66], farm: [150, 165, 98], prairie: [176, 168, 112], dry: [168, 150, 110], desert: [204, 178, 132],
+  mount: [128, 128, 98], swamp: [96, 128, 78], tropic: [104, 150, 82], tundra: [150, 156, 132] };
+function biomeOf(p) {
+  let b = BIOME_OF[p.st] || 'farm';
+  if ((p.st === 'WA' || p.st === 'OR') && p.px > 120) b = 'dry';                // east of the Cascades
+  if (p.st === 'CA' && (p.py > 360 || p.px > 120)) b = 'desert';                 // southern California and the desert east
+  if (p.st === 'TX' && p.px < 420) b = 'desert';                                 // west Texas
+  if (p.st === 'TX' && p.px > 560) b = 'swamp';                                  // the Gulf coast and piney east
+  if ((p.st === 'MT' || p.st === 'WY' || p.st === 'CO') && p.px < 330) b = 'mount';
+  if (p.st === 'MN' && p.py > 140) b = 'farm';
+  return b;
+}
+// mountain ridges in map units: [polyline, width, height]
+const RIDGES = [
+  [[[205, 55], [250, 125], [300, 190], [325, 250], [318, 300], [305, 350], [298, 400], [292, 440]], 30, 1],
+  [[[160, 85], [178, 160], [200, 200]], 26, 0.7],
+  [[[222, 190], [232, 260], [236, 320]], 16, 0.6],
+  [[[96, 18], [92, 80], [86, 140], [80, 192]], 12, 0.8],
+  [[[80, 200], [98, 262], [116, 322], [132, 362]], 13, 0.95],
+  [[[40, 60], [44, 180], [62, 300], [92, 372]], 9, 0.4],
+  [[[140, 220], [175, 250], [200, 300]], 34, 0.32],
+  [[[680, 425], [718, 372], [758, 312], [790, 262], [822, 220], [858, 172], [878, 122]], 19, 0.55],
+  [[[862, 120], [872, 100]], 18, 0.45], [[[900, 112], [906, 96]], 16, 0.42],
+  [[[540, 345], [575, 360]], 30, 0.25], [[[386, 170], [394, 180]], 11, 0.32],
+  [[[40, 515], [100, 505], [150, 520]], 16, 0.85],
+];
+function segDist(x, y, a, b) {
+  const dx = b[0] - a[0], dy = b[1] - a[1], L = dx * dx + dy * dy;
+  const t = L ? clamp(((x - a[0]) * dx + (y - a[1]) * dy) / L, 0, 1) : 0;
+  return Math.hypot(x - a[0] - t * dx, y - a[1] - t * dy);
+}
+// smooth value noise with hashed lattice points
+function vnoise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+  const h = (i, j) => { let n = (i * 374761393 + j * 668265263) | 0; n = (n ^ (n >>> 13)) * 1274126177 | 0; return ((n ^ (n >>> 16)) >>> 0) / 4294967295; };
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  const a = h(xi, yi), b = h(xi + 1, yi), c = h(xi, yi + 1), d = h(xi + 1, yi + 1);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+function buildTerrain(k) {
+  let cv, c2;
+  try { cv = document.createElement('canvas'); c2 = cv.getContext && cv.getContext('2d'); } catch (_) { return null; }
+  if (!c2 || typeof Path2D === 'undefined') return null;
+  const W = Math.round(MAP.w * k), H = Math.round(MAP.h * k);
+  cv.width = W; cv.height = H;
+  const paths = MAP.provinces.map(p => new Path2D(p.d));
+  // land mask at full size
+  c2.setTransform(k, 0, 0, k, 0, 0);
+  c2.fillStyle = '#fff'; paths.forEach(p => c2.fill(p));
+  const mask = c2.getImageData(0, 0, W, H).data;
+  // biome colours drawn small, then scaled up so neighbouring biomes blend
+  const sk = 0.12, sw = Math.ceil(MAP.w * sk), sh = Math.ceil(MAP.h * sk);
+  const sm = document.createElement('canvas'); sm.width = sw; sm.height = sh;
+  const s2 = sm.getContext('2d'); s2.setTransform(sk, 0, 0, sk, 0, 0);
+  MAP.provinces.forEach((p, i) => { const c = BIOME_RGB[biomeOf(p)]; s2.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`; s2.fill(paths[i]); s2.lineWidth = 6; s2.strokeStyle = s2.fillStyle; s2.stroke(paths[i]); });
+  c2.setTransform(1, 0, 0, 1, 0, 0); c2.clearRect(0, 0, W, H); c2.imageSmoothingEnabled = true;
+  c2.drawImage(sm, 0, 0, W, H);
+  const col = c2.getImageData(0, 0, W, H);
+  // land nearness for the coastal glow, by the same trick
+  const gm = document.createElement('canvas'); gm.width = sw; gm.height = sh;
+  const g2 = gm.getContext('2d'); g2.setTransform(sk, 0, 0, sk, 0, 0); g2.fillStyle = '#fff'; paths.forEach(p => g2.fill(p));
+  c2.clearRect(0, 0, W, H); c2.drawImage(gm, 0, 0, W, H);
+  const near = c2.getImageData(0, 0, W, H).data;
+  // elevation on a coarse grid (one cell per map unit)
+  const EW = MAP.w + 2, EH = MAP.h + 2, elev = new Float32Array(EW * EH);
+  const boxes = RIDGES.map(([pts, w]) => [Math.min(...pts.map(p => p[0])) - 2.5 * w, Math.min(...pts.map(p => p[1])) - 2.5 * w, Math.max(...pts.map(p => p[0])) + 2.5 * w, Math.max(...pts.map(p => p[1])) + 2.5 * w]);
+  for (let y = 0; y < EH; y++) for (let x = 0; x < EW; x++) {
+    let e = 0;
+    for (let ri = 0; ri < RIDGES.length; ri++) {
+      const [pts, w, h] = RIDGES[ri], bx = boxes[ri];
+      if (x < bx[0] || x > bx[2] || y < bx[1] || y > bx[3]) continue;
+      let d = Infinity;
+      for (let i = 1; i < pts.length; i++) d = Math.min(d, segDist(x, y, pts[i - 1], pts[i]));
+      if (d < w * 2.5) e = Math.max(e, h * Math.exp(-(d * d) / (w * w)));
+    }
+    elev[y * EW + x] = e;
+  }
+  const el = (x, y) => { const xi = Math.min(EW - 2, Math.max(0, x | 0)), yi = Math.min(EH - 2, Math.max(0, y | 0)), fx = x - xi, fy = y - yi, i = yi * EW + xi;
+    return (elev[i] * (1 - fx) + elev[i + 1] * fx) * (1 - fy) + (elev[i + EW] * (1 - fx) + elev[i + EW + 1] * fx) * fy; };
+  // height field: ridged noise where the land is high, gentle rolls elsewhere
+  const hf = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x;
+    if (mask[i * 4 + 3] < 128 && near[i * 4 + 3] < 200) continue;          // open sea
+    const mx = x / k, my = y / k, e = el(mx, my);
+    let h = vnoise(mx * 0.05, my * 0.05) * 2.2 + vnoise(mx * 0.22, my * 0.22) * 0.5;
+    if (e > 0.02) {
+      let r = 0, amp = 1, f = 0.09;
+      for (let o = 0; o < 4; o++) { r += amp * (1 - Math.abs(vnoise(mx * f, my * f) * 2 - 1)); amp *= 0.5; f *= 2.1; }
+      h += e * (0.35 + 0.65 * r / 1.875) * 22;
+    }
+    hf[i] = h;
+  }
+  const out = c2.createImageData(W, H), o = out.data, c = col.data;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x, j = i * 4, mx = x / k, my = y / k;
+    if (mask[j + 3] < 128) {
+      // sea: a pale glow near the coast that fades out
+      const n = near[j + 3] / 255;
+      if (n > 0.02) { o[j] = 150; o[j + 1] = 196; o[j + 2] = 214; o[j + 3] = Math.round(150 * Math.min(1, n * 1.6)); }
+      continue;
+    }
+    const e = el(mx, my), hx = hf[i + (x < W - 1 ? 1 : 0)] - hf[i - (x > 0 ? 1 : 0)], hy = hf[i + (y < H - 1 ? W : 0)] - hf[i - (y > 0 ? W : 0)];
+    const shade = clamp(1 + (-hx - hy) * 0.55 * k, 0.55, 1.45);
+    const grain = 0.9 + 0.2 * (0.6 * vnoise(mx * 0.9, my * 0.9) + 0.4 * vnoise(mx * 2.7, my * 2.7));
+    let r = c[j], g = c[j + 1], b = c[j + 2];
+    // rock and snow with height
+    const rock = clamp(e * 1.15, 0, 0.75), snow = clamp((e - 0.72) * 3, 0, 0.8) * (0.6 + 0.4 * vnoise(mx * 0.3, my * 0.3));
+    r += (132 - r) * rock; g += (122 - g) * rock; b += (104 - b) * rock;
+    r += (236 - r) * snow; g += (238 - g) * snow; b += (240 - b) * snow;
+    o[j] = clamp(r * shade * grain, 0, 255); o[j + 1] = clamp(g * shade * grain, 0, 255); o[j + 2] = clamp(b * shade * grain, 0, 255); o[j + 3] = 255;
+  }
+  c2.putImageData(out, 0, 0);
+  try { return cv.toDataURL('image/webp', 0.86); } catch (_) { return null; }
+}
+function paintTerrain() {
+  if (UI.terrainDone || !L.terr) return;
+  UI.terrainDone = true;
+  const t0 = performance.now();
+  const url = buildTerrain(Math.min(2, Math.max(1.2, (window.devicePixelRatio || 1) * 0.9)));
+  UI.terrainMs = Math.round(performance.now() - t0);
+  if (url) { L.terr.setAttribute('href', url); document.documentElement.classList.add('terrain'); }
 }
 
 // ------------------------------------------------------------ view / pan / zoom
@@ -122,7 +259,9 @@ function applyView() {
     t.style.display = show ? '' : 'none';
     cityEls[p.id].style.display = cities ? '' : 'none';
     if (!show && !cities) return;
-    cityEls[p.id].setAttribute('r', (1.8 / v.scale).toFixed(2));
+    // bigger cities get bigger markers
+    cityEls[p.id].setAttribute('r', ((1.6 + (PS[p.id].pop >= 8 ? 1.4 : PS[p.id].pop >= 3 ? 0.7 : 0)) / v.scale).toFixed(2));
+    cityEls[p.id].setAttribute('stroke-width', (0.9 / v.scale).toFixed(2));
     t.setAttribute('font-size', fs);
     t.setAttribute('y', (p.py - 3.5 / v.scale).toFixed(2));
     t.setAttribute('stroke-width', sw);
@@ -137,10 +276,10 @@ function applyView() {
   if (L.stLines) L.stLines.setAttribute('stroke-width', (1.1 / v.scale).toFixed(2));
   // roads fade in as you zoom; waypoint markers keep the same size on screen
   if (L.road) {
-    L.roads.style.display = z >= 1.25 ? '' : 'none';
-    L.roads.style.opacity = clamp((z - 1.25) / 0.8, 0.35, 1).toFixed(2);
+    L.roads.style.display = z >= 1.6 ? '' : 'none';
+    L.roads.style.opacity = clamp((z - 1.6) / 1.2, 0.3, 1).toFixed(2);
     L.road.setAttribute('stroke-width', (0.9 / v.scale).toFixed(2));
-    if (z >= 1.25 && Math.abs(v.scale - UI.wptScale) > v.scale * 0.05) {
+    if (z >= 1.6 && Math.abs(v.scale - UI.wptScale) > v.scale * 0.05) {
       UI.wptScale = v.scale;
       const r = 2.6 / v.scale, h = (r * 1.7).toFixed(2), w = r.toFixed(2);
       let d = '';
@@ -482,8 +621,8 @@ function toast(msg, kind) {
   d.className = 'toast ' + (kind || 'info');
   d.textContent = msg;
   box.appendChild(d);
-  while (box.children.length > 3) box.firstChild.remove();
-  setTimeout(() => d.remove(), 5200);
+  while (box.children.length > 2) box.firstChild.remove();
+  setTimeout(() => d.remove(), 4200);
 }
 
 // ------------------------------------------------------------ panel html
@@ -495,6 +634,33 @@ const HINT = {
 };
 const fmtU = u => UT.filter(t => u[t] >= 0.5).map(t => `${Math.round(u[t])} ${UNITS[t].s}`).join(' \u00b7 ') || 'no units';
 const dotOf = n => `<i class="dot" style="background:${n.color}"></i>`;
+// small icons (16 x 16): resources are filled, tab icons are drawn as lines
+const ICON = {
+  cash: 'M1.5 4h13v8h-13ZM8 5.8a2.2 2.2 0 1 0 0 4.4a2.2 2.2 0 1 0 0-4.4ZM3 5.5v1.5h1.5M13 10.5v-1.5h-1.5',
+  man: 'M8 1.5a2.6 2.6 0 1 1 0 5.2a2.6 2.6 0 1 1 0-5.2ZM2.5 14.5c0-3.2 2.4-5.4 5.5-5.4s5.5 2.2 5.5 5.4Z',
+  sup: 'M1.5 3h13v3h-13ZM2.5 7h11v7h-11ZM6 8.6h4v1.4H6Z',
+  comp: 'M7 1h2l.4 2 1.5.6 1.7-1.2 1.4 1.4-1.2 1.7.6 1.5 2 .4v2l-2 .4-.6 1.5 1.2 1.7-1.4 1.4-1.7-1.2-1.5.6L9 15H7l-.4-2-1.5-.6-1.7 1.2-1.4-1.4 1.2-1.7L2.6 9 1 9V7l2-.4.6-1.5L2.4 3.4l1.4-1.4 1.7 1.2L7 2.6ZM8 5.6a2.4 2.4 0 1 0 0 4.8a2.4 2.4 0 1 0 0-4.8Z',
+  fuel: 'M3.5 3.5h6l3 3v8h-9ZM4.5 1h4v2h-4ZM5.6 8l1-1 1.4 1.4L9.4 7l1 1-1.4 1.4 1.4 1.4-1 1-1.4-1.4-1.4 1.4-1-1L7 9.4Z',
+  elec: 'M4 4h8v8H4ZM6 6v4h4V6ZM5 1.5h1v2H5ZM7.5 1.5h1v2h-1ZM10 1.5h1v2h-1ZM5 12.5h1v2H5ZM7.5 12.5h1v2h-1ZM10 12.5h1v2h-1ZM1.5 5h2v1h-2ZM1.5 7.5h2v1h-2ZM1.5 10h2v1h-2ZM12.5 5h2v1h-2ZM12.5 7.5h2v1h-2ZM12.5 10h2v1h-2Z',
+  rare: 'M4.5 2h7l3 4-6.5 8.5L1.5 6ZM5.3 3.2 3.4 5.8h2.7ZM10.7 3.2 9.9 5.8h2.7Z',
+  rp: 'M5.5 1.5h5v1.3h-.9v3.4l3.9 6.3c.6 1-.1 2.2-1.2 2.2H3.7c-1.1 0-1.8-1.2-1.2-2.2l3.9-6.3V2.8h-.9ZM5 10.2h6l-1.9-3.1V2.8H6.9v4.3Z',
+  army: 'M2 10.5c0-3.6 2.7-6.3 6-6.3s6 2.7 6 6.3ZM.8 11.5h14.4v1.6H.8Z',
+};
+const TICON = {
+  map: 'M1.5 3.5l4-1.5 5 1.5 4-1.5v10.5l-4 1.5-5-1.5-4 1.5ZM5.5 2v10.5M10.5 3.5V14',
+  forces: 'M1.5 10.5h13l-1.5 3h-10ZM2.5 10.5V8h10.5v2.5M5 8l.8-2.5h4.4L11 8M10.5 6.2h4.5',
+  dip: 'M3 14.5V1.5M3 2.5h9.5l-2 3 2 3H3',
+  tech: 'M5.5 1.5h5M6.8 1.5v4.6l-3.9 6.3c-.5.9.1 1.9 1.1 1.9h8c1 0 1.6-1 1.1-1.9L9.2 6.1V1.5M4.4 10h7.2',
+  market: 'M1.8 6h12.4l-1.6 7.5H3.4ZM5 6l3-4 3 4M6 8.5v2.8M10 8.5v2.8',
+  intel: 'M1.5 14.5h13M4 12.5V8M8 12.5V3.5M12 12.5V6',
+};
+const ico = (k, cls) => `<svg class="ico${cls ? ' ' + cls : ''}" viewBox="0 0 16 16" aria-hidden="true"><path d="${ICON[k]}" fill-rule="evenodd"/></svg>`;
+const tico = k => `<svg class="ico t" viewBox="0 0 16 16" aria-hidden="true"><path d="${TICON[k]}"/></svg>`;
+const figSvg = t => `<svg class="fico" viewBox="-7 -5.5 14 11" aria-hidden="true"><path d="${FIG[FIG_OF[t]]}"/></svg>`;
+// numbers that fit: 1234 stays, 12345 becomes 12.3k
+const kfmt = v => { v = Math.floor(v); return Math.abs(v) >= 100000 ? Math.round(v / 1000) + 'k' : Math.abs(v) >= 10000 ? (Math.round(v / 100) / 10) + 'k' : String(v); };
+// a cost as icon chips
+const costH = c => S.RES.filter(k => c[k]).map(k => `<span class="cs">${ico(k)}${c[k]}</span>`).join('');
 const costStr = c => S.RES.filter(k => c[k]).map(k => k === 'cash' ? '$' + c[k] : c[k] + ' ' + S.RESN[k].s.toLowerCase()).join(' \u00b7 ');
 const BLD = S.BLD, BK = S.BK;
 const pname = pid => PS[pid].name;
@@ -535,18 +701,18 @@ function provCard(pid) {
     <div class="kv"><span>Capture time</span><b>${fmtDur(S.captureTime(p))}</b></div>
     <div class="kv"><span>Unrest</span><b data-bind="un:${pid}">${Math.round(p.unrest * 100)}%</b><div class="bar ${p.unrest > 0.6 ? 'warn' : ''}"><i data-bar="un:${pid}" style="width:${Math.round(p.unrest * 100)}%"></i></div></div>
   </div>
-  <div class="note">Makes per second: ${S.RES.filter(k => r[k] >= 0.005).map(k => `${f2(r[k])} ${S.RESN[k].n.toLowerCase()}`).join(', ')}${r.rp >= 0.005 ? `, ${f2(r.rp)} research` : ''}.</div>`;
+  <h4>Output per second</h4><div class="prod">${S.RES.filter(k => r[k] >= 0.005).map(k => `<span class="cs" title="${S.RESN[k].n}">${ico(k)}${f2(r[k])}</span>`).join('')}${r.rp >= 0.005 ? `<span class="cs" title="Research">${ico('rp')}${f2(r.rp)}</span>` : ''}</div>`;
   if (mine) {
     h += '<h4>Recruit here</h4>';
     for (const cat of S.CATS) {
       const list = UT.filter(t => UNITS[t].cat === cat && (UNITS[t].dom !== 'sea' || d.coast));
       if (!list.length) continue;
-      h += `<div class="cat">${cat}</div><div class="btns">`;
+      h += `<div class="cat">${cat}</div><div class="ugrid">`;
       for (const t of list) {
         const c = S.unitCost(t), U = UNITS[t];
-        if (!S.canTrain(p, t)) { h += `<button class="btn dim" disabled title="${U.d}">${U.n}<small>${S.needText(p, t)}</small></button>`; continue; }
+        if (!S.canTrain(p, t)) { h += `<button class="btn unit dim" disabled title="${U.d}"><span class="un">${figSvg(t)}${U.n}</span><small class="need">${S.needText(p, t)}</small></button>`; continue; }
         const ok = S.canPay(n, c);
-        h += `<button class="btn ${ok ? '' : 'dim'}" data-act="recruit" data-p="${pid}" data-t="${t}" title="${U.d}">${U.n}<small>${costStr(c)} &middot; ${fmtDur(S.trainTime(p, t))}</small><small class="ef">Atk ${U.atk} &middot; HP ${U.hp} &middot; Spd ${U.spd}. ${U.d}</small></button>`;
+        h += `<button class="btn unit ${ok ? '' : 'dim'}" data-act="recruit" data-p="${pid}" data-t="${t}" title="${U.d}"><span class="un">${figSvg(t)}${U.n}</span><span class="cost">${costH(c)}<span class="cs tm">${fmtDur(S.trainTime(p, t))}</span></span><small class="st">Atk ${U.atk} &middot; HP ${U.hp} &middot; Spd ${U.spd}</small><small class="ef">${U.d}</small></button>`;
       }
       h += '</div>';
     }
@@ -562,7 +728,7 @@ function provCard(pid) {
       const pips = `<span class="pips">${'<i class="on"></i>'.repeat(lvl)}${'<i class="q"></i>'.repeat(plan - lvl)}${'<i></i>'.repeat(max - plan)}</span>`;
       if (plan >= max) { h += `<button class="btn bld dim" disabled><span class="bn">${B.n}${pips}</span><small>${lvl >= max ? 'Maximum level' : 'Maximum level queued'}</small><small class="ef">${B.d}</small></button>`; continue; }
       const c = S.buildCost(k, plan), ok = S.canPay(n, c) && p.bq.length < 3;
-      h += `<button class="btn bld ${ok ? '' : 'dim'}" data-act="build" data-p="${pid}" data-k="${k}"><span class="bn">${B.n}${pips}</span><small>${plan ? 'To level ' + (plan + 1) : 'Build'} &middot; ${costStr(c)} &middot; ${fmtDur(S.buildTime(k, plan, m))}</small><small class="ef">${B.d}</small></button>`;
+      h += `<button class="btn bld ${ok ? '' : 'dim'}" data-act="build" data-p="${pid}" data-k="${k}"><span class="bn">${B.n}${pips}</span><small>${plan ? 'To level ' + (plan + 1) : 'Build'} &middot; ${fmtDur(S.buildTime(k, plan, m))}</small><span class="cost">${costH(c)}</span><small class="ef">${B.d}</small></button>`;
     }
     h += '</div>';
   } else {
@@ -591,7 +757,7 @@ function armyStats(a) {
   for (const t of types) {
     const U = UNITS[t], atk = U.atk * m.atk[U.cat], hp = U.hp * m.hp[U.cat];
     fire += a.u[t] * atk; tough += a.u[t] * hp; n += a.u[t];
-    h += `<tr title="${U.d}"><td>${U.n}</td><td class="mono" data-bind="ac:${a.id}:${t}">${f1(a.u[t])}</td><td class="mono">${f1(atk)}</td><td class="mono">${Math.round(hp)}</td><td class="mono">${U.spd}</td></tr>`;
+    h += `<tr title="${U.d}"><td>${figSvg(t)} ${U.n}</td><td class="mono" data-bind="ac:${a.id}:${t}">${f1(a.u[t])}</td><td class="mono">${f1(atk)}</td><td class="mono">${Math.round(hp)}</td><td class="mono">${U.spd}</td></tr>`;
   }
   h += '</table>';
   const here = a.at != null ? g.provs[a.at] : null;
@@ -701,14 +867,14 @@ function forcesPanel() {
   let h = '<h4>Total forces</h4>';
   for (const cat of S.CATS) {
     const list = UT.filter(t => UNITS[t].cat === cat && tot[t] >= 0.5);
-    if (list.length) h += `<div class="cat">${cat}</div><div class="kvs">${list.map(t => `<div class="kv"><span>${UNITS[t].n}</span><b>${Math.round(tot[t])}</b></div>`).join('')}</div>`;
+    if (list.length) h += `<div class="cat">${cat}</div><div class="kvs">${list.map(t => `<div class="kv"><span>${figSvg(t)} ${UNITS[t].n}</span><b>${Math.round(tot[t])}</b></div>`).join('')}</div>`;
   }
   h += `<div class="kvs"><div class="kv"><span>Upkeep / s</span><b>${f1(n.rate.up)}</b></div></div>`;
   h += '<h4>Armies</h4>';
   if (!mine.length) h += '<p class="note">No armies. Recruit units in one of your provinces.</p>';
   for (const a of mine) {
     const st = a.mv ? `${a.strike ? 'striking' : 'heading to'} ${pname(a.mv.to)}` : (g.provs[a.at].battle ? 'in battle' : 'at ' + pname(a.at));
-    h += `<div class="row" tabindex="0" data-act="selarmy" data-a="${a.id}"><div class="grow"><div class="nm">${KIND[S.domOf(a)]} ${a.id} <span class="sub">${st}</span></div><div class="sub">${fmtU(a.u)}</div></div></div>`;
+    h += `<div class="row" tabindex="0" data-act="selarmy" data-a="${a.id}"><span class="figs">${figsOf(a).map(f => `<svg class="fico" viewBox="-7 -5.5 14 11" aria-hidden="true"><path d="${FIG[f]}"/></svg>`).join('')}</span><div class="grow"><div class="nm">${KIND[S.domOf(a)]} ${a.id} <span class="sub">${st}</span></div><div class="sub">${fmtU(a.u)}</div></div></div>`;
   }
   const q = g.provs.filter(p => p.owner === m && p.q.length);
   h += '<h4>Training</h4>';
@@ -737,7 +903,7 @@ function techPanel() {
     h += `<div class="row" style="cursor:default"><div class="grow"><div class="nm">Researching ${T[k].n} <span class="mono" data-bind="rse">${fmtDur(researchEta(n))}</span></div><div class="sub">${T[k].d}</div><div class="bar"><i data-bar="rs" style="width:${Math.round(100 * n.rs.got / n.rs.need)}%"></i></div></div><button class="btn" data-act="cancelresearch">Cancel</button></div>`;
   } else h += '<p class="note">Nothing being researched. Pick a project below; your research points pour into it until it is done. Research labs make more points.</p>';
   for (const br of S.BRANCHES) {
-    h += `<div class="cat">${br}</div><div class="btns">`;
+    h += `<div class="cat">${br}</div><div class="ugrid">`;
     for (const k of S.TK.filter(k => T[k].br === br)) {
       const t = T[k], done = !!n.tech[k], open = S.techOpen(n, k), cur = n.rs && n.rs.k === k;
       const sub = done ? 'Done' : cur ? 'In progress' : !open ? 'Needs ' + t.req.filter(r => !n.tech[r]).map(r => T[r].n).join(', ') : `${S.techCost(k)} points \u00b7 tier ${t.tier}`;
@@ -759,7 +925,7 @@ function marketPanel() {
   for (const k of S.MKT_RES) {
     const p = S.mktPrice(k), prev = S.MKT_BASE[k] * g.mkt.prev[k];
     const tr = p > prev * 1.03 ? ' <span class="up">\u25b2</span>' : p < prev * 0.97 ? ' <span class="down">\u25bc</span>' : '';
-    h += `<div class="mrow"><div class="mtop"><b>${S.RESN[k].n}</b><span class="mono">${Math.floor(n[k])} <em class="${n.rate[k] >= 0 ? 'up' : 'down'}">${sgn(n.rate[k])}/s</em></span></div>`;
+    h += `<div class="mrow"><div class="mtop"><b>${ico(k)}${S.RESN[k].n}</b><span class="mono">${Math.floor(n[k])} <em class="${n.rate[k] >= 0 ? 'up' : 'down'}">${sgn(n.rate[k])}/s</em></span></div>`;
     h += `<div class="sub mono">sell $${f2(p * (1 - fee))} \u00b7 buy $${f2(p * (1 + fee))} each${tr} \u00b7 ${Math.round(100 * g.mkt.idx[k])}% of normal</div><div class="btns">`;
     for (const q of [50, 250]) {
       const qt = S.mktQuote(m, k, -q), ok = n[k] >= q && qt.cash >= 0.5;
@@ -949,9 +1115,9 @@ function renderHeader() {
   $('#clock').textContent = clockText() + (n ? ` \u00b7 ${S.D.owned[m].length} provinces` : '');
   if (!n) { $('#res').innerHTML = `<span class="rs"><small>${g.nations.filter(x => x.alive).length} nations alive</small></span>`; return; }
   const r = n.rate;
-  const chip = (lab, val, rate) => `<span class="rs"${lab === 'Cash' || lab === 'Research' ? '' : ' data-act="mkt"'}><small>${lab}</small><b>${Math.floor(val)}</b><em class="${rate >= 0 ? 'up' : 'down'}">${sgn(rate)}</em></span>`;
+  const chip = (k, lab, val, rate) => `<span class="rs" title="${lab}"${k === 'cash' || k === 'rp' ? '' : ' data-act="mkt"'}>${ico(k)}<b>${kfmt(val)}</b>${rate == null ? '' : `<em class="${rate >= 0 ? 'up' : 'down'}">${sgn(rate)}</em>`}</span>`;
   const units = S.D.armiesBy[m].reduce((s, a) => s + S.unitCount(a.u), 0);
-  const resH = chip('Cash', n.cash, r.net) + S.RES.filter(k => k !== 'cash').map(k => chip(S.RESN[k].s, n[k], r[k])).join('') + chip('Research', n.rp, r.rp) + `<span class="rs"><small>Army</small><b>${Math.round(units)}</b></span>`;
+  const resH = chip('cash', 'Cash', n.cash, r.net) + S.RES.filter(k => k !== 'cash').map(k => chip(k, S.RESN[k].n, n[k], r[k])).join('') + chip('rp', 'Research points', n.rp, r.rp) + chip('army', 'Units in your armies', units, null);
   if (resH !== UI.resH) { $('#res').innerHTML = resH; UI.resH = resH; }
   const pend = g.proposals.filter(p => p.to === m).length, bd = $('#dipBadge');
   bd.hidden = !pend; bd.textContent = pend;
@@ -1186,7 +1352,9 @@ new ResizeObserver(() => {
 function boot(data) {
   data = data || {};
   buildMap();
+  document.querySelectorAll('#tabs button').forEach(b => { if (TICON[b.dataset.v] && !b.querySelector('.ico')) b.insertAdjacentHTML('afterbegin', tico(b.dataset.v)); });
   requestAnimationFrame(frame);
+  setTimeout(paintTerrain, 60);
   if (data.save) { try { S.load(data.save); afterStart(); if (data.ui) { UI.speed = data.ui.speed === undefined ? 1 : data.ui.speed; setSpeed(UI.speed); } return; } catch (_) {} }
   showStart();
 }
