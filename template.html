@@ -114,6 +114,7 @@ h4:first-child { margin-top: 0; }
 .pips { display: inline-flex; gap: 2px; flex: none; }
 .pips i { width: 7px; height: 7px; border: 1px solid currentColor; }
 .pips i.on { background: currentColor; }
+.pips i.q { background: repeating-linear-gradient(45deg, currentColor 0 1.5px, transparent 1.5px 3px); }
 .btns { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
 .btn { background: var(--paper); border: 1px solid var(--ink); color: var(--ink); padding: 6px 11px; min-height: 36px; font: 600 13px var(--body); cursor: pointer; border-radius: 2px; text-align: left; line-height: 1.15; }
 .btn small { display: block; font: 500 10.5px var(--mono); color: var(--ink2); margin-top: 2px; }
@@ -130,7 +131,7 @@ h4:first-child { margin-top: 0; }
 .note { color: var(--ink2); font-size: 13px; margin: 6px 0; }
 .msg { margin: 8px 0; padding: 7px 9px; border-left: 3px solid var(--hot); background: var(--paper2); font-size: 13px; }
 .logl { display: flex; gap: 8px; padding: 4px 0; border-bottom: 1px dotted var(--line); font-size: 13px; }
-.logl time { font: 500 11px var(--mono); color: var(--ink2); flex: none; width: 44px; padding-top: 2px; }
+.logl time { font: 500 11px var(--mono); color: var(--ink2); flex: none; min-width: 44px; white-space: nowrap; padding-top: 2px; }
 .logl.war { color: var(--warn); } .logl.capture { color: var(--hot); }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 td, th { padding: 5px 4px; border-bottom: 1px solid var(--line); text-align: right; }
@@ -181,8 +182,8 @@ details p { margin: 4px 0 8px; color: var(--ink2); }
     <div class="speed" role="group" aria-label="Game speed">
       <button data-act="speed" data-v="0" aria-label="Pause" aria-pressed="false">II</button>
       <button data-act="speed" data-v="1" aria-pressed="true">1&times;</button>
-      <button data-act="speed" data-v="2" aria-pressed="false">2&times;</button>
       <button data-act="speed" data-v="4" aria-pressed="false">4&times;</button>
+      <button data-act="speed" data-v="16" aria-pressed="false">16&times;</button>
     </div>
   </header>
   <div id="res" class="mono"></div>
