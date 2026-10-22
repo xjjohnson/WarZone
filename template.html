@@ -75,6 +75,9 @@ b, strong { font-weight: 600; }
 .bdg .dir { fill: var(--badge-ink); }
 .bdg.sel rect { stroke: var(--sel); stroke-width: 2.4; }
 .bdg.foe rect { stroke-dasharray: 0; }
+.bdg .hull { stroke: var(--badge-ink); stroke-width: 1; }
+.bdg.sel .hull { stroke: var(--sel); stroke-width: 2.4; }
+.bdg.strike rect { stroke-dasharray: 2 1.5; }
 .fxr { fill: none; stroke-width: 2; pointer-events: none; }
 .mapctl { position: absolute; right: max(10px, env(safe-area-inset-right, 0px)); top: 10px; display: flex; flex-direction: column; border: 1px solid var(--line); background: var(--paper); }
 .mapctl button { width: 36px; height: 36px; border: 0; border-bottom: 1px solid var(--line); background: none; font: 600 17px var(--mono); cursor: pointer; }
@@ -96,6 +99,7 @@ b, strong { font-weight: 600; }
 h3 { margin: 0; font: 800 22px/1 var(--display); letter-spacing: .05em; text-transform: uppercase; }
 h4 { margin: 14px 0 6px; font: 600 10.5px var(--body); letter-spacing: .14em; text-transform: uppercase; color: var(--ink2); }
 h4:first-child { margin-top: 0; }
+.cat { margin: 8px 0 2px; font: 600 10px var(--body); letter-spacing: .1em; text-transform: uppercase; color: var(--ink3, var(--ink2)); }
 .hd { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; flex-wrap: wrap; }
 .hd small { font: 500 12px var(--mono); color: var(--ink2); }
 .dot { display: inline-block; width: 11px; height: 11px; border: 1px solid var(--ink); vertical-align: -1px; flex: none; }

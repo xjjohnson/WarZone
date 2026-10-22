@@ -227,6 +227,11 @@ function orderTo(pid) {
   const a = army(UI.selA);
   if (!a || a.owner !== me()) { UI.selA = null; selectProv(pid); return; }
   if (pid === a.at && !a.mv) { UI.selA = null; selectProv(pid); return; }
+  // a missile strike cannot be called back, so it takes a second tap
+  if (S.domOf(a) === 'msl' && a.at != null) {
+    const ok = S.missileOk(a, pid);
+    if (ok.ok && ok.strike && UI.confirm !== 'msl:' + pid) { UI.selP = pid; UI.confirm = 'msl:' + pid; toast('Tap ' + PS[pid].name + ' again to launch', 'info'); dirty(); return; }
+  }
   const r = S.cmdMove(a.id, pid);
   toast(r.msg + (r.eta ? ` (ETA ${fmtDur(r.eta)})` : ''), r.ok ? 'ok' : 'bad');
   UI.selP = pid; UI.confirm = ''; dirty();
@@ -235,8 +240,11 @@ function orderTo(pid) {
 // ------------------------------------------------------------ map drawing (per frame)
 function makeBadge(a) {
   const n = nat(a.owner);
+  const dom = S.domOf(a);
   const g = mk('g', { class: 'bdg', 'data-a': a.id }, L.armies);
-  mk('rect', { x: -11, y: -6.5, width: 22, height: 13, rx: 2, fill: n.color }, g);
+  // armies are tags, fleets are hulls, missile salvos are pills
+  if (dom === 'sea') mk('path', { class: 'hull', d: 'M-13 -6.5H13L9 6.5H-9Z', fill: n.color }, g);
+  else mk('rect', { x: -11, y: -6.5, width: 22, height: 13, rx: dom === 'msl' ? 6.5 : 2, fill: n.color }, g);
   const t = mk('text', { y: 3.3 }, g);
   const d = mk('path', { class: 'dir', d: 'M0 -4L7 0L0 4Z', display: 'none' }, g);
   return { g, t, d, last: '' };
@@ -286,7 +294,7 @@ function drawMap(now) {
     e.g.setAttribute('transform', `translate(${x.toFixed(1)} ${y.toFixed(1)}) scale(${bk.toFixed(4)})`);
     const txt = String(Math.max(1, Math.round(S.unitCount(a.u))));
     if (e.last !== txt) { e.t.textContent = txt; e.last = txt; }
-    const cls = 'bdg' + (a.id === UI.selA ? ' sel' : '') + (a.owner !== me() ? ' foe' : '');
+    const cls = 'bdg' + (a.id === UI.selA ? ' sel' : '') + (a.owner !== me() ? ' foe' : '') + (a.strike ? ' strike' : '');
     if (e.g.getAttribute('class') !== cls) e.g.setAttribute('class', cls);
     if (ang === null) e.d.setAttribute('display', 'none');
     else { e.d.setAttribute('display', ''); e.d.setAttribute('transform', `translate(11 0) rotate(${ang.toFixed(0)}) translate(-1 0)`); }
@@ -308,8 +316,10 @@ function drawMap(now) {
       mk('circle', { cx: d.cx, cy: d.cy + 2 * bk, r: r.toFixed(2), class: 'fxr', stroke: g.nations[p.cap.by].color, 'stroke-width': (3.2 * bk).toFixed(2), 'stroke-dasharray': `${(c * clamp(p.cap.p, 0, 1)).toFixed(1)} ${c.toFixed(1)}`, transform: `rotate(-90 ${d.cx} ${d.cy + 2 * bk})` }, L.fx);
     }
   }
-  // routes
+  // routes, and the reach of a selected missile salvo
   L.routes.textContent = '';
+  const sa = UI.selA && army(UI.selA);
+  if (sa && sa.at != null && S.domOf(sa) === 'msl') mk('circle', { cx: PS[sa.at].cx, cy: PS[sa.at].cy, r: S.MSL_RANGE, class: 'route faint', fill: 'none', 'stroke-width': (1.2 / UI.view.scale).toFixed(2), 'stroke-dasharray': `${(5 / UI.view.scale).toFixed(1)} ${(4 / UI.view.scale).toFixed(1)}` }, L.routes);
   for (const a of g.armies) {
     if (a.owner !== me() || (!a.route.length && !a.mv)) continue;
     const sel = a.id === UI.selA;
@@ -338,6 +348,12 @@ function toast(msg, kind) {
 }
 
 // ------------------------------------------------------------ panel html
+const KIND = { land: 'Army', sea: 'Fleet', msl: 'Missiles' };
+const HINT = {
+  land: 'Waiting for orders. Tap a province on the map to march.',
+  sea: 'Fleets sail along the coast. Tap a coastal province to sail there; at war they sink ships and shell ports, but only troops can take a province.',
+  msl: 'Tap an enemy province inside the dashed ring to strike it, or one of your own to move the salvo. Missiles hit once and are spent.',
+};
 const fmtU = u => UT.filter(t => u[t] >= 0.5).map(t => `${Math.round(u[t])} ${UNITS[t].s}`).join(' \u00b7 ') || 'no units';
 const dotOf = n => `<i class="dot" style="background:${n.color}"></i>`;
 const costStr = c => S.RES.filter(k => c[k]).map(k => k === 'cash' ? '$' + c[k] : c[k] + ' ' + S.RESN[k].s.toLowerCase()).join(' \u00b7 ');
@@ -382,14 +398,19 @@ function provCard(pid) {
   </div>
   <div class="note">Makes per second: ${S.RES.filter(k => r[k] >= 0.005).map(k => `${f2(r[k])} ${S.RESN[k].n.toLowerCase()}`).join(', ')}${r.rp >= 0.005 ? `, ${f2(r.rp)} research` : ''}.</div>`;
   if (mine) {
-    h += '<h4>Recruit here</h4><div class="btns">';
-    for (const t of UT) {
-      const c = S.unitCost(t);
-      if (!S.canTrain(p, t)) { h += `<button class="btn dim" disabled>${UNITS[t].n}<small>Needs ${BLD[UNITS[t].need].n.toLowerCase()}</small></button>`; continue; }
-      const ok = S.canPay(n, c);
-      h += `<button class="btn ${ok ? '' : 'dim'}" data-act="recruit" data-p="${pid}" data-t="${t}">${UNITS[t].n}<small>${costStr(c)} &middot; ${fmtDur(S.trainTime(p, t))}</small></button>`;
+    h += '<h4>Recruit here</h4>';
+    for (const cat of S.CATS) {
+      const list = UT.filter(t => UNITS[t].cat === cat && (UNITS[t].dom !== 'sea' || d.coast));
+      if (!list.length) continue;
+      h += `<div class="cat">${cat}</div><div class="btns">`;
+      for (const t of list) {
+        const c = S.unitCost(t), U = UNITS[t];
+        if (!S.canTrain(p, t)) { h += `<button class="btn dim" disabled title="${U.d}">${U.n}<small>${S.needText(p, t)}</small></button>`; continue; }
+        const ok = S.canPay(n, c);
+        h += `<button class="btn ${ok ? '' : 'dim'}" data-act="recruit" data-p="${pid}" data-t="${t}" title="${U.d}">${U.n}<small>${costStr(c)} &middot; ${fmtDur(S.trainTime(p, t))}</small></button>`;
+      }
+      h += '</div>';
     }
-    h += '</div>';
     if (p.q.length) h += `<div class="note">Training: ${p.q.map((it, i) => `${UNITS[it.type].s} <span class="mono" data-bind="q:${pid}:${i}">${fmtDur(it.left)}</span>`).join(' &rarr; ')}</div>`;
     h += '<h4>City buildings</h4>';
     if (p.bq.length) {
@@ -415,7 +436,7 @@ function provCard(pid) {
     h += '<h4>Armies here</h4>';
     for (const a of here) {
       const an = nat(a.owner);
-      h += `<div class="row" tabindex="0" data-act="selarmy" data-a="${a.id}">${dotOf(an)}<div class="grow"><div class="nm">${an.short}</div><div class="sub">${fmtU(a.u)}</div></div>${a.owner === m ? '<span class="tag">Select</span>' : ''}</div>`;
+      h += `<div class="row" tabindex="0" data-act="selarmy" data-a="${a.id}">${dotOf(an)}<div class="grow"><div class="nm">${an.short} ${KIND[S.domOf(a)].toLowerCase()}</div><div class="sub">${fmtU(a.u)}</div></div>${a.owner === m ? '<span class="tag">Select</span>' : ''}</div>`;
     }
   }
   return h;
@@ -424,16 +445,22 @@ function provCard(pid) {
 function armyCard(a) {
   const g = G(), n = nat(a.owner), here = a.at != null ? a.at : a.mv.to;
   const tot = S.unitCount(a.u) || 1;
-  let h = `<div class="hd">${dotOf(n)}<h3>Army ${a.id}</h3><small>${a.at != null ? 'at ' + pname(a.at) : 'to ' + pname(a.mv.to)}</small></div>`;
+  const dom = S.domOf(a);
+  let h = `<div class="hd">${dotOf(n)}<h3>${KIND[dom]} ${a.id}</h3><small>${a.at != null ? 'at ' + pname(a.at) : 'to ' + pname(a.mv.to)}</small></div>`;
   h += '<div class="kvs">';
-  for (const t of UT) if (a.u[t] >= 0.5) h += `<div class="kv"><span>${UNITS[t].n}</span><b data-bind="ac:${a.id}:${t}">${Math.round(a.u[t])}</b></div>`;
+  for (const t of UT) if (a.u[t] >= 0.5) h += `<div class="kv" title="${UNITS[t].d}"><span>${UNITS[t].n}</span><b data-bind="ac:${a.id}:${t}">${Math.round(a.u[t])}</b></div>`;
   h += `<div class="kv"><span>Speed</span><b>${S.armySpeed(a)}</b></div>`;
-  if (a.at != null && (g.provs[a.at].owner === a.owner || S.allied(a.owner, g.provs[a.at].owner))) h += `<div class="kv"><span>Dug in</span><b>+${Math.round(S.entrench(a, g.provs[a.at]) * 100)}%</b></div>`;
+  if (a.at != null && dom !== 'msl' && (g.provs[a.at].owner === a.owner || S.allied(a.owner, g.provs[a.at].owner))) h += `<div class="kv"><span>Dug in</span><b>+${Math.round(S.entrench(a, g.provs[a.at]) * 100)}%</b></div>`;
   h += '</div>';
-  if (a.mv || a.route.length) h += `<div class="note">Marching &middot; ETA <b class="mono" data-bind="eta:${a.id}">${fmtDur(etaOf(a))}</b></div>`;
+  if (a.mv || a.route.length) h += `<div class="note">${a.strike ? 'Missiles in flight' : dom === 'sea' ? 'Under way' : 'Marching'} &middot; ETA <b class="mono" data-bind="eta:${a.id}">${fmtDur(etaOf(a))}</b></div>`;
   else if (g.provs[here].battle) h += '<div class="note down">Engaged in battle.</div>';
-  else h += '<div class="note">Waiting for orders. Tap a province on the map to march.</div>';
-  if (UI.selP != null && UI.selP !== here) {
+  else h += `<div class="note">${HINT[dom]}</div>`;
+  if (dom === 'msl' && UI.selP != null && UI.selP !== here && a.at != null) {
+    const r = S.missileOk(a, UI.selP);
+    h += `<h4>Target: ${PS[UI.selP].name}</h4><div class="note ${r.ok ? '' : 'down'}">${r.ok ? (r.strike ? 'In range. Tap the province again to launch.' : 'In range. The salvo will move there.') : r.msg + '.'}</div>`;
+  } else if (dom === 'sea' && UI.selP != null && UI.selP !== here && !PS[UI.selP].coast) {
+    h += `<h4>Target: ${PS[UI.selP].name}</h4><div class="note down">Inland. Fleets can only sail to coastal provinces.</div>`;
+  } else if (UI.selP != null && UI.selP !== here) {
     const tp = g.provs[UI.selP], to = nat(tp.owner);
     h += `<h4>Target: ${PS[UI.selP].name}</h4>`;
     if (tp.owner === a.owner) h += '<div class="note">Friendly territory.</div>';
@@ -454,7 +481,7 @@ function armyCard(a) {
     h += `<button class="btn" data-act="split" data-a="${a.id}" data-k="half">Split &frac12;</button><button class="btn" data-act="split" data-a="${a.id}" data-k="quarter">Split &frac14;</button>`;
     const types = UT.filter(t => a.u[t] >= 0.5);
     if (types.length > 1) for (const t of types) h += `<button class="btn" data-act="split" data-a="${a.id}" data-k="${t}">Detach ${UNITS[t].s}</button>`;
-    if (g.armies.filter(x => x.owner === a.owner && x.at === a.at && !x.mv).length > 1) h += `<button class="btn" data-act="merge" data-p="${a.at}">Merge all here</button>`;
+    if (g.armies.filter(x => x.owner === a.owner && x.at === a.at && !x.mv && !x.strike && S.domOf(x) === dom).length > 1) h += `<button class="btn" data-act="merge" data-p="${a.at}" data-k="${dom}">Merge all ${dom === 'sea' ? 'fleets' : dom === 'msl' ? 'salvos' : 'armies'} here</button>`;
   }
   h += `<button class="btn" data-act="selprov" data-p="${here}">Province</button><button class="btn warn" data-act="disband" data-a="${a.id}">Disband</button></div>`;
   return h;
@@ -472,14 +499,20 @@ function mapPanel() {
 function forcesPanel() {
   const g = G(), m = me(); if (m < 0) return '<p class="note">Observing.</p>';
   const mine = g.armies.filter(a => a.owner === m).sort((a, b) => S.unitPow(b.u) - S.unitPow(a.u));
-  const n = nat(m), tot = { inf: 0, art: 0, arm: 0, air: 0 };
+  const n = nat(m), tot = {};
+  for (const t of UT) tot[t] = 0;
   for (const a of mine) for (const t of UT) tot[t] += a.u[t];
-  let h = `<h4>Total forces</h4><div class="kvs">${UT.map(t => `<div class="kv"><span>${UNITS[t].n}</span><b>${Math.round(tot[t])}</b></div>`).join('')}<div class="kv"><span>Upkeep / s</span><b>${f1(n.rate.up)}</b></div></div>`;
+  let h = '<h4>Total forces</h4>';
+  for (const cat of S.CATS) {
+    const list = UT.filter(t => UNITS[t].cat === cat && tot[t] >= 0.5);
+    if (list.length) h += `<div class="cat">${cat}</div><div class="kvs">${list.map(t => `<div class="kv"><span>${UNITS[t].n}</span><b>${Math.round(tot[t])}</b></div>`).join('')}</div>`;
+  }
+  h += `<div class="kvs"><div class="kv"><span>Upkeep / s</span><b>${f1(n.rate.up)}</b></div></div>`;
   h += '<h4>Armies</h4>';
   if (!mine.length) h += '<p class="note">No armies. Recruit units in one of your provinces.</p>';
   for (const a of mine) {
-    const st = a.mv ? `marching to ${pname(a.mv.to)}` : (g.provs[a.at].battle ? 'in battle' : 'at ' + pname(a.at));
-    h += `<div class="row" tabindex="0" data-act="selarmy" data-a="${a.id}"><div class="grow"><div class="nm">Army ${a.id} <span class="sub">${st}</span></div><div class="sub">${fmtU(a.u)}</div></div></div>`;
+    const st = a.mv ? `${a.strike ? 'striking' : 'heading to'} ${pname(a.mv.to)}` : (g.provs[a.at].battle ? 'in battle' : 'at ' + pname(a.at));
+    h += `<div class="row" tabindex="0" data-act="selarmy" data-a="${a.id}"><div class="grow"><div class="nm">${KIND[S.domOf(a)]} ${a.id} <span class="sub">${st}</span></div><div class="sub">${fmtU(a.u)}</div></div></div>`;
   }
   const q = g.provs.filter(p => p.owner === m && p.q.length);
   h += '<h4>Training</h4>';
@@ -558,7 +591,8 @@ function intelPanel() {
   <p>Each province is a city region that produces cash, manpower and one resource. Build in its city: an army base to train artillery and armor, an air base for air wings, defences to hold it, and industry to grow. Construction takes time, so build before the enemy comes.</p>
   <p>Fortifications help every defender, bunkers harden the garrison, anti-air shoots down air wings, hospitals cut your losses, and armies that stay put on friendly soil dig in. Artillery halves all of these bonuses.</p>
   <p>Conquered provinces are restless. Keep troops there, or they rise up and return to their old owners or go independent.</p>
-  <p>Armor beats infantry, air beats armor, infantry handles air, artillery shines behind a front.</p>
+  <p>Ground units win and hold land: tanks break infantry, artillery and special forces ignore half of all defence bonuses, mobile flak guards the army against aircraft. Helicopters and bombers hunt tanks and guns, interceptors win the sky, patrol aircraft find submarines. Air bases train aircraft and airborne troops; a level-2 base is needed for bombers.</p>
+  <p>Naval bases train ships, which sail between coastal provinces as fleets: patrol boats, destroyers (which hunt submarines), submarines (which sink ships) and strike cruisers (level-3 base). Cruise missiles come from an arms industry, fly to an enemy province in range, hit once and may wreck a level of its defences. Anti-air, flak, interceptors and destroyers shoot some of them down.</p>
   <p>There is no premium currency and no forced ending. Past 60% of the population the game asks once if you want to stop. The late game keeps going: coalitions form against a runaway power.</p></details>`;
   h += '<h4>Events</h4>';
   const ev = g.log.slice(-40).reverse();
@@ -792,7 +826,7 @@ document.addEventListener('click', e => {
     case 'selprov': selectProv(+d.p); break;
     case 'stop': S.cmdStop(+d.a); toast('Halting at the next stop', 'ok'); dirty(); break;
     case 'split': { const r = S.cmdSplit(+d.a, d.k); toast(r.msg, r.ok ? 'ok' : 'bad'); if (r.ok) { UI.selA = r.id; } dirty(); break; }
-    case 'merge': { const r = S.cmdMerge(m, +d.p); toast(r.msg, r.ok ? 'ok' : 'bad'); if (r.ok) UI.selA = r.id; dirty(); break; }
+    case 'merge': { const r = S.cmdMerge(m, +d.p, d.k); toast(r.msg, r.ok ? 'ok' : 'bad'); if (r.ok) UI.selA = r.id; dirty(); break; }
     case 'disband': S.cmdDisband(+d.a); UI.selA = null; toast('Army disbanded', 'ok'); dirty(); break;
     case 'homefocus': { const c = nat(m).capital; selectProv(c); focusOn(c, 1.8); break; }
     case 'focusnat': focusNation(+d.n); break;

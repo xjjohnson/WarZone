@@ -29,6 +29,9 @@ const click = sel => { const el = d.querySelector(sel); if (!el) throw new Error
   await sleep(350);
   console.log('construction:', JSON.stringify(S.G.provs[UI.selP].bq), 'queue:', S.G.provs[UI.selP].q.map(q => q.type).join(','));
   click('[data-act="cancelbuild"]'); await sleep(350); click('[data-act="build"][data-k="army"]'); await sleep(50);
+  // a patrol boat if the capital is a port, and the recruit list grouped by category
+  if (d.querySelector('[data-act="recruit"][data-t="pb"]')) { click('[data-act="recruit"][data-t="pb"]'); await sleep(50); }
+  console.log('categories:', [...d.querySelectorAll('#sheet .cat')].map(e => e.textContent).join(','), 'queue now:', S.G.provs[UI.selP].q.map(q => q.type).join(','));
   // tabs
   for (const t of ['forces', 'dip', 'intel', 'map']) { click(`[data-act="tab"][data-v="${t}"]`); await sleep(350); console.log('tab', t, 'len', d.getElementById('sheet').innerHTML.length); }
   // select own army, then a neighbour
@@ -59,6 +62,20 @@ const click = sel => { const el = d.querySelector(sel); if (!el) throw new Error
     click('[data-act="war"]'); await sleep(350);
     console.log('war declared:', S.atWar(2, foe.id));
   }
+  // missiles: build a salvo at the capital and check the strike card
+  const g = S.G, cap = g.nations[2].capital, wars = Object.keys(g.wars).map(k => k.split('-').map(Number)).filter(p => p.includes(2)).map(p => p[0] === 2 ? p[1] : p[0]);
+  g.provs[cap].b.arms = 1; Object.assign(g.nations[2], { cash: 2000, comp: 500, fuel: 500, elec: 500, rare: 500 });
+  console.log('missile recruit:', S.cmdRecruit(2, cap, 'msl').msg);
+  for (let i = 0; i < 25 * 4; i++) S.step(0.25);
+  const sal = g.armies.find(a => a.owner === 2 && S.domOf(a) === 'msl');
+  if (sal && sal.at != null) {
+    const tgt = S.PS.map(p => p.id).find(pid => wars.includes(g.provs[pid].owner) && S.missileOk(sal, pid).ok);
+    click(`[data-act="tab"][data-v="forces"]`); await sleep(350);
+    click(`[data-act="selarmy"][data-a="${sal.id}"]`); await sleep(350);
+    if (tgt !== undefined) { UI.selP = tgt; await sleep(350); }
+    console.log('missile card:', d.getElementById('sheet').textContent.replace(/\s+/g, ' ').slice(0, 200));
+    if (tgt !== undefined) { console.log('launch:', S.cmdMove(sal.id, tgt).msg); for (let i = 0; i < 20 * 4; i++) S.step(0.25); console.log('salvo left:', g.armies.includes(sal), 'missiles hit', Math.round(g.stats.msl || 0)); }
+  } else console.log('no salvo (capital may have fallen)');
   for (let i = 0; i < 3 * 60 * 4; i++) S.step(0.25);
   await sleep(500);
   console.log('proposals', S.G.proposals.length, 'log', S.G.log.length);

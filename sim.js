@@ -21,22 +21,58 @@ const RESN = {
   elec: { n: 'Electronics',    s: 'Elec' },
   rare: { n: 'Rare materials', s: 'Rare' },
 };
-const UT = ['inf', 'art', 'arm', 'air'];
-// need: building required in the province to train it; fast: building whose level speeds training
+// Units. cls: combat class (sets the damage table); dom: land (ground and air, march together),
+// sea (ships, sail the coast) or msl (missiles, fly to a target and hit once).
+// need: buildings (and levels) the province needs to train it; fast: buildings whose level speeds training;
+// vs: this unit's own damage multipliers by target class, over the class table; ign: share of defence bonuses it ignores.
 const UNITS = {
-  inf: { n: 'Infantry',  s: 'Inf', atk: 3, hp: 12, spd: 14, time: 7,  upk: 0.05, cost: { cash: 40,  man: 6, sup: 5 },                    need: null,   fast: ['army', 'recr'] },
-  art: { n: 'Artillery', s: 'Art', atk: 7, hp: 8,  spd: 11, time: 11, upk: 0.08, cost: { cash: 70,  man: 4, sup: 4, comp: 20 },          need: 'army', fast: ['army'] },
-  arm: { n: 'Armor',     s: 'Arm', atk: 8, hp: 20, spd: 19, time: 14, upk: 0.12, cost: { cash: 90,  man: 4, comp: 25, fuel: 15 },        need: 'army', fast: ['army'] },
-  air: { n: 'Air wing',  s: 'Air', atk: 9, hp: 10, spd: 48, time: 18, upk: 0.15, cost: { cash: 120, man: 2, comp: 15, fuel: 25, elec: 15 }, need: 'airb', fast: ['airb'] },
+  // ground
+  inf:  { n: 'Rifle infantry',       s: 'Inf',  cat: 'Ground', cls: 'inf',  dom: 'land', atk: 3,   hp: 12, spd: 14, time: 7,  upk: 0.05, cost: { cash: 40, man: 6, sup: 5 },                         need: null,         fast: ['army', 'recr'], d: 'Cheap and steady. Holds ground and handles helicopters.' },
+  mech: { n: 'Mechanized infantry',  s: 'Mech', cat: 'Ground', cls: 'veh',  dom: 'land', atk: 4,   hp: 16, spd: 18, time: 10, upk: 0.08, cost: { cash: 50, man: 6, sup: 4, comp: 10, fuel: 5 },          need: { army: 1 },  fast: ['army'], d: 'Infantry in armored carriers: tougher and faster.' },
+  abn:  { n: 'Airborne troops',      s: 'Abn',  cat: 'Ground', cls: 'inf',  dom: 'land', atk: 4,   hp: 11, spd: 16, time: 12, upk: 0.08, cost: { cash: 55, man: 5, sup: 6, elec: 5 },                  need: { airb: 1 },  fast: ['airb'], d: 'Trained at an air base. An army of only airborne troops and aircraft is flown, at air speed.' },
+  sf:   { n: 'Special forces',       s: 'SF',   cat: 'Ground', cls: 'inf',  dom: 'land', atk: 7,   hp: 12, spd: 16, time: 16, upk: 0.12, cost: { cash: 80, man: 4, sup: 6, elec: 10 },                need: { army: 2 },  fast: ['army'], ign: 0.5, d: 'Elite raiders. Ignore half of the enemy defence bonuses.' },
+  art:  { n: 'Field artillery',      s: 'Art',  cat: 'Ground', cls: 'art',  dom: 'land', atk: 7,   hp: 8,  spd: 11, time: 11, upk: 0.08, cost: { cash: 50, man: 4, sup: 4, comp: 20 },                 need: { army: 1 },  fast: ['army'], ign: 0.5, d: 'Shells dug-in defenders. Ignores half of all defence bonuses.' },
+  arm:  { n: 'Battle tank',          s: 'Tank', cat: 'Ground', cls: 'veh',  dom: 'land', atk: 8,   hp: 20, spd: 19, time: 14, upk: 0.12, cost: { cash: 70, man: 4, comp: 25, fuel: 15 },               need: { army: 1 },  fast: ['army'], d: 'Breaks infantry lines. Weak against attack helicopters and bombers.' },
+  flak: { n: 'Mobile flak',          s: 'Flak', cat: 'Ground', cls: 'veh',  dom: 'land', atk: 4,   hp: 14, spd: 17, time: 11, upk: 0.08, cost: { cash: 55, man: 3, comp: 18, fuel: 6, elec: 6 },       need: { army: 1 },  fast: ['army'], vs: { air: 2.4, heli: 2.6, msl: 3 }, d: 'Anti-air that marches with the army. Shoots down aircraft and missiles.' },
+  // air
+  heli: { n: 'Attack helicopter',    s: 'Heli', cat: 'Air',    cls: 'heli', dom: 'land', atk: 8,   hp: 9,  spd: 36, time: 15, upk: 0.12, cost: { cash: 75, man: 2, comp: 14, fuel: 14, elec: 8 },     need: { airb: 1 },  fast: ['airb'], d: 'Tank hunter. Vulnerable to flak and infantry.' },
+  ftr:  { n: 'Interceptor',          s: 'Int',  cat: 'Air',    cls: 'air',  dom: 'land', atk: 9,   hp: 10, spd: 60, time: 18, upk: 0.15, cost: { cash: 90, man: 2, comp: 15, fuel: 18, elec: 15 },    need: { airb: 1 },  fast: ['airb'], vs: { air: 2.2, heli: 2.2, msl: 1.5, inf: 0.35, veh: 0.3, art: 0.35, ship: 0.3, sub: 0 }, d: 'Wins the sky: hunts enemy aircraft and missiles, weak against ground targets.' },
+  bmb:  { n: 'Strike bomber',        s: 'Bmb',  cat: 'Air',    cls: 'air',  dom: 'land', atk: 12,  hp: 12, spd: 44, time: 24, upk: 0.2,  cost: { cash: 120, man: 2, comp: 22, fuel: 25, elec: 12 },    need: { airb: 2 },  fast: ['airb'], vs: { air: 0.2, heli: 0.3, inf: 1.3, veh: 1.8, art: 1.8, ship: 1.6, sub: 0.1 }, d: 'Heavy strikes on armor, guns and ships. Easy prey for interceptors.' },
+  pat:  { n: 'Patrol aircraft',      s: 'Pat',  cat: 'Air',    cls: 'air',  dom: 'land', atk: 6,   hp: 10, spd: 50, time: 16, upk: 0.1,  cost: { cash: 70, man: 2, comp: 10, fuel: 14, elec: 12 },     need: { airb: 1 },  fast: ['airb'], vs: { sub: 3, ship: 1.3, air: 0.3, heli: 0.5, inf: 0.4, veh: 0.4, art: 0.4 }, d: 'Finds and sinks submarines, and harries ships near the coast.' },
+  // sea
+  pb:   { n: 'Patrol boat',          s: 'PB',   cat: 'Sea',    cls: 'ship', dom: 'sea',  atk: 5,   hp: 14, spd: 30, time: 12, upk: 0.08, cost: { cash: 50, man: 3, comp: 15, fuel: 10 },               need: { naval: 1 }, fast: ['naval'], d: 'Fast coastal boat. Cheap screen for the fleet.' },
+  dd:   { n: 'Destroyer',            s: 'DD',   cat: 'Sea',    cls: 'ship', dom: 'sea',  atk: 9,   hp: 26, spd: 26, time: 24, upk: 0.16, cost: { cash: 110, man: 4, comp: 35, fuel: 18, elec: 10 },    need: { naval: 2 }, fast: ['naval'], vs: { sub: 2, air: 1.2, heli: 1.2, msl: 1.5 }, d: 'Escort that hunts submarines and shoots at aircraft.' },
+  sub:  { n: 'Attack submarine',     s: 'Sub',  cat: 'Sea',    cls: 'sub',  dom: 'sea',  atk: 10,  hp: 16, spd: 22, time: 26, upk: 0.15, cost: { cash: 110, man: 3, comp: 30, fuel: 10, elec: 15, rare: 5 }, need: { naval: 2 }, fast: ['naval'], d: 'Sinks ships and is hard to hit. Only destroyers and patrol aircraft find it.' },
+  cru:  { n: 'Strike cruiser',       s: 'Cru',  cat: 'Sea',    cls: 'ship', dom: 'sea',  atk: 12,  hp: 40, spd: 22, time: 40, upk: 0.25, cost: { cash: 180, man: 5, comp: 55, fuel: 25, elec: 20, rare: 10 }, need: { naval: 3 }, fast: ['naval'], d: 'Big guns for shore bombardment and fleet battles.' },
+  // missiles
+  msl:  { n: 'Cruise missile',       s: 'Msl',  cat: 'Missile', cls: 'msl', dom: 'msl',  atk: 200, hp: 2,  spd: 90, time: 20, upk: 0.02, cost: { cash: 100, comp: 20, fuel: 12, elec: 20, rare: 10 },  need: { arms: 1 },  fast: ['arms'], ign: 0.5, d: 'Flies to a province at war with you and hits once, often wrecking a level of its defences. Flak, interceptors and anti-air can shoot it down.' },
 };
-// damage multiplier: MULT[attacker][defender]
-const MULT = {
-  inf: { inf: 1,   art: 1.2, arm: 0.5, air: 0.35 },
-  art: { inf: 1.4, art: 1,   arm: 1.2, air: 0.1 },
-  arm: { inf: 1.5, art: 1.3, arm: 1,   air: 0.1 },
-  air: { inf: 1,   art: 1.3, arm: 1.7, air: 1 },
+const UT = Object.keys(UNITS);
+const CATS = ['Ground', 'Air', 'Sea', 'Missile'];
+// damage multiplier by class: CM[attacker class][target class]
+const CM = {
+  inf:  { inf: 1,   veh: 0.55, art: 1.2, air: 0.3,  heli: 0.6, ship: 0.15, sub: 0,   msl: 0.1 },
+  veh:  { inf: 1.5, veh: 1,    art: 1.3, air: 0.1,  heli: 0.3, ship: 0.3,  sub: 0,   msl: 0 },
+  art:  { inf: 1.4, veh: 1.1,  art: 1,   air: 0.05, heli: 0.1, ship: 0.6,  sub: 0,   msl: 0 },
+  air:  { inf: 1,   veh: 1.5,  art: 1.3, air: 1,    heli: 1.2, ship: 1.2,  sub: 0.2, msl: 0.5 },
+  heli: { inf: 1.1, veh: 1.8,  art: 1.3, air: 0.2,  heli: 0.8, ship: 0.8,  sub: 0.3, msl: 0 },
+  ship: { inf: 1.1, veh: 1,    art: 1.1, air: 0.6,  heli: 0.8, ship: 1,    sub: 0.5, msl: 0.5 },
+  sub:  { inf: 0,   veh: 0,    art: 0,   air: 0,    heli: 0,   ship: 1.8,  sub: 0.6, msl: 0 },
+  msl:  { inf: 1.3, veh: 1.5,  art: 1.5, air: 0.2,  heli: 0.3, ship: 1.6,  sub: 0,   msl: 0 },
 };
-const TW = { inf: 1, art: 0.45, arm: 1, air: 0.8 };   // how likely a type is to take hits
+// how likely a class is to take hits
+const TWC = { inf: 1, veh: 1, art: 0.45, air: 0.8, heli: 0.8, ship: 1, sub: 0.5, msl: 0.3 };
+const MULT = {}, TW = {};
+for (const t of UT) {
+  const U = UNITS[t]; MULT[t] = {}; TW[t] = TWC[U.cls];
+  for (const t2 of UT) { const c2 = UNITS[t2].cls; MULT[t][t2] = U.vs && U.vs[c2] !== undefined ? U.vs[c2] : CM[U.cls][c2]; }
+}
+const AIRCLS = { air: 1, heli: 1, msl: 1 };
+const isAirT = t => !!AIRCLS[UNITS[t].cls];
+const isAir = {}; for (const t of UT) isAir[t] = isAirT(t);
+const AIR_T = UT.filter(isAirT);
+const LAND_T = UT.filter(t => UNITS[t].dom === 'land'), SEA_T = UT.filter(t => UNITS[t].dom === 'sea'), MSL_T = UT.filter(t => UNITS[t].dom === 'msl');
+const GROUND_T = UT.filter(t => UNITS[t].cat === 'Ground');
 const K_DMG = 0.16;
 const CAPTURE_T = 20;      // base seconds of unopposed occupation to take a province
 const MAX_LVL = 3;         // default building cap (BLD entries may set their own max)
@@ -52,7 +88,7 @@ const BLD = {
   airb:  { n: 'Air base',          d: 'Needed to train air wings. They train 15% faster per level.',                   cost: { cash: 110, comp: 20, fuel: 15 }, time: 40 },
   naval: { n: 'Naval base',        d: 'Coastal cities only. Port trade: +15% cash here per level.',                     cost: { cash: 100, sup: 10, comp: 20 }, time: 40, coast: true },
   recr:  { n: 'Recruiting office', d: '+0.15 manpower per level. Infantry trains 15% faster per level.',                  cost: { cash: 60, sup: 12 },            time: 20 },
-  arms:  { n: 'Arms industry',     d: '+0.2 components per level.',                                                     cost: { cash: 110, comp: 10, rare: 15 }, time: 45 },
+  arms:  { n: 'Arms industry',     d: '+0.4 components per level. Needed to build cruise missiles.',                   cost: { cash: 110, sup: 15, rare: 15 }, time: 45 },
   hosp:  { n: 'Hospital',          d: 'Your troops here take 10% less damage per level, and the garrison recovers faster.', cost: { cash: 80, sup: 15, elec: 10 }, time: 30 },
   fort:  { n: 'Fortifications',    d: '+20% defence for all defenders per level, a bigger garrison and a slower capture.', cost: { cash: 60, sup: 10, comp: 12 }, time: 20, max: 5 },
   bunk:  { n: 'Bunkers',           d: 'The garrison takes less damage, +2 garrison and faster refill per level.',       cost: { cash: 70, sup: 10, comp: 25 },  time: 25 },
@@ -130,16 +166,38 @@ MAPD.provinces.forEach(p => p.nbrs.forEach(q => {
   EDGE[p.id * NP + q] = Math.hypot(a.cx - b.cx, a.cy - b.cy);
 }));
 MAPD.sea.forEach(([a, b, d]) => { EDGE[a * NP + b] = d; EDGE[b * NP + a] = d; });
+// Sea graph: ships sail between coastal provinces that touch, along the sea lanes, and across a few
+// short gaps where the coast between two ports is not a province of its own.
+const SEA_LINKS = [['ME', 'Portland', 'MA', 'Boston'], ['NY', 'New York', 'NJ', 'Toms River']];
+const SEA_NB = PS.map(p => p.coast ? p.nbrs.filter(q => PS[q].coast) : []);
+for (const [s1, n1, s2, n2] of SEA_LINKS) {
+  const a = PS.find(p => p.st === s1 && p.name === n1), b = PS.find(p => p.st === s2 && p.name === n2);
+  if (!a || !b || !a.coast || !b.coast) continue;
+  if (!SEA_NB[a.id].includes(b.id)) { SEA_NB[a.id].push(b.id); SEA_NB[b.id].push(a.id); }
+  if (!EDGE[a.id * NP + b.id]) EDGE[a.id * NP + b.id] = EDGE[b.id * NP + a.id] = Math.hypot(a.cx - b.cx, a.cy - b.cy);
+}
+const nbrsOf = (dom, u) => dom === 'sea' ? SEA_NB[u] : PS[u].nbrs;
+const MSL_RANGE = 260;     // how far (map units) a missile flies
+const mslDist = (a, b) => Math.hypot(PS[a].cx - PS[b].cx, PS[a].cy - PS[b].cy);
+// Alaska and Hawaii are drawn as insets, so map distance means nothing across them
+const INSET = { AK: 1, HI: 1 };
+const inRange = (a, b) => (INSET[PS[a].st] || INSET[PS[b].st] ? PS[a].st === PS[b].st : true) && mslDist(a, b) <= MSL_RANGE;
 
 // ---------------------------------------------------------------- state
 let G = null;
 let D = null;     // derived caches, rebuilt every second
 
 const pers = n => PERS[n.pers];
-const unitPow = u => UT.reduce((s, t) => s + u[t] * UNITS[t].atk * UNITS[t].hp, 0);
+// rough fighting strength; a missile counts for little because it is spent in one hit
+const POW = {}; for (const t of UT) POW[t] = UNITS[t].dom === 'msl' ? 50 : UNITS[t].atk * UNITS[t].hp;
+const unitPow = u => UT.reduce((s, t) => s + u[t] * POW[t], 0);
 const unitCount = u => UT.reduce((s, t) => s + u[t], 0);
-const cloneU = u => ({ inf: u.inf, art: u.art, arm: u.arm, air: u.air });
-const emptyU = () => ({ inf: 0, art: 0, arm: 0, air: 0 });
+const cloneU = u => { const o = {}; for (const t of UT) o[t] = u[t] || 0; return o; };
+const emptyU = () => { const o = {}; for (const t of UT) o[t] = 0; return o; };
+const garU = g => { const o = emptyU(); o.inf = g; return o; };
+// which kind of army a unit belongs to, and an army's kind
+const domOf = a => { for (const t of UT) if (a.u[t] > 0.02 && UNITS[t].dom !== 'land') return UNITS[t].dom; return 'land'; };
+const groundCount = u => GROUND_T.reduce((s, t) => s + u[t], 0);
 const maxGar = p => PS[p.id].gar * (p.orig === p.owner ? 1.6 : 1) + 1.5 * p.b.fort + 2 * p.b.bunk + (G.nations[p.owner] && G.nations[p.owner].capital === p.id ? 3 : 0);
 const isCapital = p => !!G.nations[p.owner] && G.nations[p.owner].capital === p.id;
 // home soil (a nation's original provinces) is defended harder, the capital hardest
@@ -149,9 +207,14 @@ const captureTime = p => CAPTURE_T * (1 + 0.25 * p.b.fort + 0.25 * p.b.bunk + (p
 // armies standing still on their own or allied soil dig in over time
 const entrench = (a, p) => (a.since == null || a.mv) ? 0 : ENTRENCH_MAX * clamp((G.t - a.since) / ENTRENCH_T, 0, 1);
 const armySpeed = a => {
-  let s = 999;
-  for (const t of UT) if (a.u[t] > 0.3) s = Math.min(s, UNITS[t].spd);
-  return s === 999 ? UNITS.inf.spd : s;
+  let s = 999, onlyFliers = true;
+  for (const t of UT) if (a.u[t] > 0.3) {
+    if (t === 'abn' || isAirT(t)) continue;
+    onlyFliers = false; s = Math.min(s, UNITS[t].spd);
+  }
+  // airborne troops travelling with nothing but aircraft are flown in
+  if (onlyFliers) { s = 999; for (const t of UT) if (a.u[t] > 0.3 && isAirT(t)) s = Math.min(s, UNITS[t].spd); if (s === 999) s = 40; if (a.u.abn > 0.3) s = Math.min(s, 40); }
+  return s;
 };
 
 // ---------------------------------------------------------------- relations helpers
@@ -279,7 +342,7 @@ function provOut(pid, out) {
   out.man += (d.man + 0.15 * b.recr) * m;
   out[d.res] += RES_RATE * m;
   out.sup += SUP_BASE * m;
-  out.comp += 0.2 * b.arms * m;
+  out.comp += 0.4 * b.arms * m;
   out.rp += 0.2 * b.lab * (1 - 0.6 * p.unrest);
   if (capital) for (const k of RES) if (k !== 'cash' && k !== 'man') out[k] += CAP_TRICKLE;
   return out;
@@ -325,12 +388,23 @@ const maxLvl = kind => BLD[kind].max || MAX_LVL;
 // level a building will reach once everything already queued is finished
 const plannedLvl = (p, kind) => p.b[kind] + p.bq.filter(b => b.k === kind).length;
 // can province p train unit type t, and how long does it take there
-const canTrain = (p, t) => !UNITS[t].need || p.b[UNITS[t].need] > 0;
+const canTrain = (p, t) => {
+  const U = UNITS[t];
+  if (U.dom === 'sea' && !PS[p.id].coast) return false;
+  return !U.need || Object.keys(U.need).every(k => p.b[k] >= U.need[k]);
+};
+// what a province still lacks to train t, as text
+const needText = (p, t) => {
+  const U = UNITS[t];
+  if (U.dom === 'sea' && !PS[p.id].coast) return 'Coastal cities only';
+  const miss = Object.keys(U.need || {}).filter(k => p.b[k] < U.need[k]);
+  return miss.length ? 'Needs ' + miss.map(k => BLD[k].n.toLowerCase() + (U.need[k] > 1 ? ' ' + U.need[k] : '')).join(', ') : '';
+};
 const trainTime = (p, t) => UNITS[t].time * (1 - 0.15 * Math.max(...UNITS[t].fast.map(k => p.b[k])));
 
 function prodTick(dt) {
   for (const p of G.provs) {
-    if (p.cap || p.battle) continue;       // no training or building under siege
+    if (p.cap || p.siege) continue;       // no training or building under siege
     if (p.bq.length) {
       const b = p.bq[0];
       b.left -= dt;
@@ -345,7 +419,8 @@ function prodTick(dt) {
     it.left -= dt;
     if (it.left <= 0) {
       p.q.shift();
-      let a = G.armies.find(x => x.owner === p.owner && x.at === p.id && !x.mv && !x.route.length);
+      const dom = UNITS[it.type].dom;
+      let a = G.armies.find(x => x.owner === p.owner && x.at === p.id && !x.mv && !x.route.length && !x.strike && domOf(x) === dom);
       if (a) a.u[it.type] += 1;
       else { a = newArmy(p.owner, p.id); a.u[it.type] = 1; }
     }
@@ -362,7 +437,7 @@ function edgeTime(i, j, speed) { return (EDGE[i * NP + j] || 100) / speed; }
 
 // Dijkstra over provinces the nation may enter, with a small binary heap.
 // Returns { dist, prev }; stops early once `to` is settled (if given).
-function dijkstra(nat, from, speed, to) {
+function dijkstra(nat, from, speed, to, dom) {
   const dist = new Float64Array(NP).fill(Infinity), prev = new Int16Array(NP).fill(-1), done = new Uint8Array(NP);
   const hp = [], hk = [];
   const push = (v, k) => {
@@ -389,7 +464,7 @@ function dijkstra(nat, from, speed, to) {
     if (done[u]) continue;
     done[u] = 1;
     if (u === to) break;
-    for (const v of PS[u].nbrs) {
+    for (const v of nbrsOf(dom, u)) {
       if (done[v] || !canEnter(nat, v)) continue;
       const hostile = G.provs[v].owner !== nat && atWar(nat, G.provs[v].owner);
       const w = edgeTime(u, v, speed) + (hostile && v !== to ? 14 : 0);
@@ -405,30 +480,50 @@ function pathTo(dj, from, to) {
   while (c !== from) { r.unshift(c); c = dj.prev[c]; }
   return r;
 }
-function findRoute(nat, from, to, speed) {
+function findRoute(nat, from, to, speed, dom) {
   if (from === to) return [];
-  return pathTo(dijkstra(nat, from, speed, to), from, to);
+  if (dom === 'sea' && !PS[to].coast) return null;
+  return pathTo(dijkstra(nat, from, speed, to, dom), from, to);
 }
 function routeTime(a, route, startPid) {
   const sp = armySpeed(a); let t = 0, cur = startPid;
+  if (domOf(a) === 'msl') { for (const r of route) { t += mslDist(cur, r) / sp; cur = r; } return t; }
   for (const r of route) { t += edgeTime(cur, r, sp); cur = r; }
   return t;
 }
+// can this missile army fly to dest: a strike on an enemy, or a transfer to friendly ground
+function missileOk(a, dest) {
+  if (a.mv || a.strike) return { ok: false, msg: 'Already launched' };
+  if (!inRange(a.at, dest)) return { ok: false, msg: 'Out of missile range' };
+  const o = G.provs[dest].owner;
+  if (atWar(a.owner, o) || (D.armyAt[dest] || []).some(x => atWar(a.owner, x.owner))) return { ok: true, strike: true };
+  if (o === a.owner || allied(a.owner, o)) return { ok: true, strike: false };
+  return { ok: false, msg: 'Missiles can only strike a nation you are at war with' };
+}
 function orderMove(a, dest) {
-  const sp = armySpeed(a);
+  const sp = armySpeed(a), dom = domOf(a);
+  if (dom === 'msl') {
+    if (a.at === dest) return { ok: true, msg: 'Holding position' };
+    const m = missileOk(a, dest);
+    if (!m.ok) return m;
+    const dur = mslDist(a.at, dest) / sp;
+    a.mv = { from: a.at, to: dest, t: 0, dur }; a.at = null; a.route = []; a.strike = m.strike;
+    return { ok: true, msg: m.strike ? 'Missiles launched' : 'Missiles relocating', eta: dur };
+  }
   if (!a.mv) {
     if (a.at === dest) { a.route = []; return { ok: true, msg: 'Holding position' }; }
-    const r = findRoute(a.owner, a.at, dest, sp);
-    if (!r) return { ok: false, msg: 'No permitted route. Declare war or get passage rights first.' };
+    if (dom === 'sea' && !PS[dest].coast) return { ok: false, msg: 'Ships can only sail to coastal provinces.' };
+    const r = findRoute(a.owner, a.at, dest, sp, dom);
+    if (!r) return { ok: false, msg: dom === 'sea' ? 'No sea route there. Ships need open water and permission to pass.' : 'No permitted route. Declare war or get passage rights first.' };
     a.route = r; startNext(a);
     return { ok: true, msg: 'Moving out', eta: routeTime(a, r, a.at) };
   }
   // already on the road: either carry on to the next stop, or turn around
-  const fwdRoute = findRoute(a.owner, a.mv.to, dest, sp) || (a.mv.to === dest ? [] : null);
+  const fwdRoute = findRoute(a.owner, a.mv.to, dest, sp, dom) || (a.mv.to === dest ? [] : null);
   const fwdCost = a.mv.dur - a.mv.t + (fwdRoute ? routeTime(a, fwdRoute, a.mv.to) : Infinity);
   let backRoute = null, backCost = Infinity;
   if (canEnter(a.owner, a.mv.from)) {
-    backRoute = a.mv.from === dest ? [] : findRoute(a.owner, a.mv.from, dest, sp);
+    backRoute = a.mv.from === dest ? [] : findRoute(a.owner, a.mv.from, dest, sp, dom);
     if (backRoute) backCost = a.mv.t + routeTime(a, backRoute, a.mv.from);
   }
   if (fwdCost === Infinity && backCost === Infinity) return { ok: false, msg: 'No permitted route.' };
@@ -468,13 +563,14 @@ function moveTick(dt) {
 // pull armies out of territory they no longer have the right to stand in
 function enforceBorders() {
   for (const a of G.armies) {
-    if (a.at == null) continue;
+    if (a.at == null || a.strike) continue;
     if (canEnter(a.owner, a.at)) continue;
     // nearest tile we may stand on
+    const dom = domOf(a);
     const seen = new Set([a.at]); let frontier = [[a.at, []]], dest = null;
     while (frontier.length && !dest) {
       const nxt = [];
-      for (const [u, path] of frontier) for (const v of PS[u].nbrs) {
+      for (const [u, path] of frontier) for (const v of nbrsOf(dom, u)) {
         if (seen.has(v)) continue; seen.add(v);
         const o = G.provs[v].owner;
         if (o === a.owner || hasAccess(a.owner, o)) { dest = path.concat([v]); break; }
@@ -491,24 +587,22 @@ function sizeOf(f) { let s = 0; for (const t of UT) s += f.u[t] * TW[t]; return 
 function roundForces(forces, dt, noise) {
   const dmg = forces.map(() => emptyU());
   const sizes = forces.map(sizeOf);
+  const act = forces.map(f => UT.filter(t => f.u[t] > 0));      // unit types each side still has
   for (let i = 0; i < forces.length; i++) {
     const f = forces[i];
     if (sizes[i] <= 0.01) continue;
     let tot = 0; const foes = [];
     for (let j = 0; j < forces.length; j++) if (j !== i && sizes[j] > 0.01 && atWar(f.nat, forces[j].nat)) { foes.push(j); tot += sizes[j]; }
     if (!foes.length) continue;
-    for (const at of UT) {
-      const c = f.u[at]; if (c <= 0) continue;
-      const base = c * UNITS[at].atk * K_DMG * dt * (noise ? rnd(0.88, 1.12) : 1) * (f.gar ? 0.8 : 1);
+    for (const at of act[i]) {
+      const c = f.u[at], U = UNITS[at], M = MULT[at];
+      const base = c * U.atk * K_DMG * dt * (noise ? rnd(0.88, 1.12) : 1) * (f.gar ? 0.8 : 1);
       for (const j of foes) {
         const e = forces[j], share = sizes[j] / tot;
-        for (const dt2 of UT) {
-          if (e.u[dt2] <= 0) continue;
-          const tsh = e.u[dt2] * TW[dt2] / sizes[j];
-          // artillery halves every defensive bonus; anti-air only matters against air
-          const bonus = ((e.db || 0) + (e.hard || 0) + (at === 'air' ? 0.4 * (e.aa || 0) : 0)) * (at === 'art' ? 0.5 : 1);
-          dmg[j][dt2] += base * share * tsh * MULT[at][dt2] * (1 - (e.med || 0)) / (1 + bonus);
-        }
+        // artillery, special forces and missiles ignore part of every defensive bonus; anti-air only matters against air
+        const bonus = ((e.db || 0) + (e.hard || 0) + (isAir[at] ? 0.4 * (e.aa || 0) : 0)) * (1 - (U.ign || 0));
+        const k = base * share * (1 - (e.med || 0)) / (1 + bonus) / sizes[j], dj = dmg[j];
+        for (const dt2 of act[j]) dj[dt2] += k * e.u[dt2] * TW[dt2] * M[dt2];
       }
     }
   }
@@ -517,22 +611,23 @@ function roundForces(forces, dt, noise) {
     const f = forces[i];
     if (!f.flak || sizes[i] <= 0.01) continue;
     let air = 0;
-    for (let j = 0; j < forces.length; j++) if (j !== i && atWar(f.nat, forces[j].nat)) air += forces[j].u.air;
+    for (let j = 0; j < forces.length; j++) if (j !== i && atWar(f.nat, forces[j].nat)) for (const t of AIR_T) air += forces[j].u[t] * TW[t];
     if (air <= 0) continue;
-    for (let j = 0; j < forces.length; j++) if (j !== i && forces[j].u.air > 0 && atWar(f.nat, forces[j].nat)) dmg[j].air += f.flak * FLAK * dt * forces[j].u.air / air;
+    for (let j = 0; j < forces.length; j++) if (j !== i && atWar(f.nat, forces[j].nat)) for (const t of AIR_T) if (forces[j].u[t] > 0) dmg[j][t] += f.flak * FLAK * dt * forces[j].u[t] * TW[t] / air;
   }
-  for (let i = 0; i < forces.length; i++) for (const t of UT) {
+  for (let i = 0; i < forces.length; i++) for (const t of act[i]) {
     forces[i].u[t] = Math.max(0, forces[i].u[t] - dmg[i][t] / UNITS[t].hp);
     if (forces[i].u[t] < 0.02) forces[i].u[t] = 0;
   }
   return dmg;
 }
-function forcesIn(pid, clone) {
+function forcesIn(pid, clone, list) {
   const p = G.provs[pid], out = [];
+  list = list || (D.armyAt[pid] || []);
   const db = defBonus(p), med = 0.1 * p.b.hosp, aa = p.b.aa;
-  if (p.garrison > 0.05) out.push({ nat: p.owner, u: clone ? { inf: p.garrison, art: 0, arm: 0, air: 0 } : null, gar: true, ref: p, db, med, aa, hard: 0.5 * p.b.bunk, flak: aa });
-  for (const a of G.armies) {
-    if (a.at !== pid) continue;
+  if (p.garrison > 0.05) out.push({ nat: p.owner, u: clone ? garU(p.garrison) : null, gar: true, ref: p, db, med, aa, hard: 0.5 * p.b.bunk, flak: aa });
+  for (const a of list) {
+    if (a.at !== pid || (domOf(a) === 'msl' && !a.strike)) continue;
     const isDef = a.owner === p.owner || allied(a.owner, p.owner);
     out.push({ nat: a.owner, u: clone ? cloneU(a.u) : a.u, ref: a, db: isDef ? db + entrench(a, p) : 0, aa: isDef ? aa : 0, med: a.owner === p.owner ? med : 0 });
   }
@@ -557,51 +652,77 @@ function predictAttack(nat, units, pid, extraDefense) {
   return { win: left < 0.3 && unitCount(a.u) > 0.3, keep: unitCount(a.u) / startA, defLeft: left / defStart };
 }
 
+// anti-air, flak, interceptors and destroyers shoot down part of an incoming missile salvo before it hits
+function intercept(forces) {
+  for (const f of forces) {
+    if (!f.ref || !f.ref.strike || !(f.u.msl > 0)) continue;
+    let kill = 0;
+    for (const g of forces) if (g !== f && atWar(f.nat, g.nat)) kill += 0.25 * (g.flak || 0) + 0.3 * g.u.flak + 0.15 * g.u.ftr + 0.2 * g.u.dd + 0.1 * g.u.cru;
+    f.u.msl = Math.max(0, f.u.msl - Math.min(f.u.msl * 0.9, kill * rnd(0.6, 1.2)));
+  }
+}
 function processBattles() {
+  const at = {}, gone = new Set();
+  for (const a of G.armies) if (a.at != null) (at[a.at] = at[a.at] || []).push(a);
   for (const p of G.provs) {
-    const here = [];
-    for (const a of G.armies) if (a.at === p.id) here.push(a);
+    const here = (at[p.id] || []).filter(a => !gone.has(a) && G.nations[a.owner].alive && a.at === p.id);
     let hostile = false;
     const nats = new Set(here.map(a => a.owner));
     if (p.garrison > 0.05) nats.add(p.owner);
     const list = [...nats];
     for (let i = 0; i < list.length && !hostile; i++) for (let j = i + 1; j < list.length; j++) if (atWar(list[i], list[j])) { hostile = true; break; }
     p.battle = hostile;
+    // a siege (which stops training and building) needs enemy troops or aircraft; ships and missiles only raid
+    p.siege = hostile && here.some(a => atWar(a.owner, p.owner) && domOf(a) === 'land');
     if (hostile) {
-      const forces = forcesIn(p.id, false);
+      const forces = forcesIn(p.id, false, here);
       const gf = forces.find(f => f.gar);
       let gu = null;
-      if (gf) { gu = { inf: p.garrison, art: 0, arm: 0, air: 0 }; gf.u = gu; }
+      if (gf) { gu = garU(p.garrison); gf.u = gu; }
       const before = new Map(forces.filter(f => f.ref && !f.gar).map(f => [f.ref, unitCount(f.u)]));
+      intercept(forces);
+      const salvo = forces.filter(f => f.ref && f.ref.strike).map(f => [f, f.u.msl || 0]);
       roundForces(forces, 1, true);
       if (gu) p.garrison = gu.inf;
+      // missiles are spent on impact, and may wreck a level of the defences
+      for (const [f, m] of salvo) {
+        if (atWar(f.nat, p.owner)) for (let i = 0; i < Math.round(m); i++) {
+          const hit = ['fort', 'bunk', 'aa'].filter(k => p.b[k] > 0);
+          if (hit.length && Math.random() < 0.4) p.b[hit[Math.floor(Math.random() * hit.length)]]--;
+        }
+        G.stats.msl = (G.stats.msl || 0) + m;
+        f.u.msl = 0;
+      }
       for (const f of forces) if (f.ref && !f.gar) {
         const a = f.ref;
         const lost = (before.get(a) || 0) - unitCount(a.u);
         if (lost > 0) G.nations[a.owner].lost = (G.nations[a.owner].lost || 0) + lost;
-        if (unitCount(a.u) < 0.4) { G.armies = G.armies.filter(x => x !== a); }
+        if (unitCount(a.u) < 0.4) gone.add(a);
       }
       p.lastBattle = G.t;
     } else if (p.garrison < maxGar(p)) {
       const enemyPresent = here.some(a => atWar(a.owner, p.owner));
       if (!enemyPresent) p.garrison = Math.min(maxGar(p), p.garrison + 0.05 + 0.015 * p.b.fort + 0.02 * p.b.bunk + 0.02 * p.b.hosp);
     }
-    // occupation
-    const present = G.armies.filter(a => a.at === p.id);
+    // missiles that arrive with nothing left to hit are lost
+    if (!hostile) for (const a of here) if (a.strike) gone.add(a);
+    // occupation: only ground troops take a province, and any defending army or fleet stops it
+    const present = here.filter(a => !gone.has(a) && domOf(a) !== 'msl');
     const ownerSide = present.some(a => a.owner === p.owner || allied(a.owner, p.owner));
-    const occ = present.filter(a => atWar(a.owner, p.owner));
+    const occ = present.filter(a => atWar(a.owner, p.owner) && groundCount(a.u) >= 0.3);
     if (occ.length && !ownerSide && p.garrison < 0.3) {
       let best = occ[0];
       for (const a of occ) if (unitPow(a.u) > unitPow(best.u)) best = a;
       const by = best.owner;
       const ct = captureTime(p);
       if (p.cap && p.cap.by === by) p.cap.p += 1 / ct; else p.cap = { by, p: 1 / ct };
-      if (p.cap.p >= 1) capture(p, by);
+      if (p.cap.p >= 1) { if (gone.size) { G.armies = G.armies.filter(a => !gone.has(a)); gone.clear(); } capture(p, by); }
     } else if (p.cap) {
       p.cap.p -= 0.12;
       if (p.cap.p <= 0) p.cap = null;
     }
   }
+  if (gone.size) G.armies = G.armies.filter(a => !gone.has(a));
 }
 
 function capture(p, by) {
@@ -609,7 +730,9 @@ function capture(p, by) {
   const wasCap = O.capital === p.id;
   p.owner = by; p.garrison = 0.5; p.cap = null;
   for (const k of BK) p.b[k] = Math.max(0, p.b[k] - 1);      // the fighting wrecks a level of everything
-  p.unrest = p.orig === by ? 0.15 : 0.65; p.q = []; p.bq = []; p.battle = false;
+  p.unrest = p.orig === by ? 0.15 : 0.65; p.q = []; p.bq = []; p.battle = false; p.siege = false;
+  // missiles stored here are destroyed on the ground
+  G.armies = G.armies.filter(a => !(a.at === p.id && a.owner === old && domOf(a) === 'msl'));
   const d = PS[p.id];
   B.cash += 15 + d.pop * 3; B[d.res] += 15;
   const k = key(old, by);
@@ -873,10 +996,16 @@ function diplo(action, from, to, extra) {
 }
 
 // ---------------------------------------------------------------- AI : economy
+// share of the rivals' forces in each combat class (inf, veh, art, air, heli, ship, sub, msl)
 function enemyComp(ids) {
-  const c = { inf: 0, art: 0, arm: 0, air: 0 }; let tot = 0;
-  for (const id of ids) for (const a of D.armiesBy[id]) for (const t of UT) { c[t] += a.u[t]; tot += a.u[t]; }
-  for (const t of UT) c[t] = tot ? c[t] / tot : 0.25;
+  const ck = ids.join(',');
+  if (opMemo && opMemo.has('ec' + ck)) return opMemo.get('ec' + ck);
+  const c = {}; let tot = 0;
+  for (const k in CM) c[k] = 0;
+  for (const id of ids) for (const a of D.armiesBy[id]) for (const t of UT) { c[UNITS[t].cls] += a.u[t]; tot += a.u[t]; }
+  for (const k in c) c[k] = tot ? c[k] / tot : 0;
+  if (!tot) c.inf = 1;
+  if (opMemo) opMemo.set('ec' + ck, c);
   return c;
 }
 // opinions are costly to compute, so the AI caches them for one think
@@ -888,7 +1017,7 @@ const opn = (a, b) => {
   if (v === undefined) { v = opinion(a, b).total; opMemo.set(k, v); }
   return v;
 };
-const airShare = ids => enemyComp(ids).air;
+const airShare = ids => { const c = enemyComp(ids); return c.air + c.heli + 0.5 * c.msl; };
 function threatScore(nid, pid) {
   let s = 0;
   for (const q of PS[pid].nbrs) {
@@ -908,106 +1037,154 @@ function aiEconomy(n) {
   const wars = enemiesOf(nid);
   const ts = {};
   for (const pid of owned) ts[pid] = threatScore(nid, pid);
-  let want = { inf: 0.42, art: 0.16, arm: 0.30, air: 0.12 };
+  // the land army's mix, adapted to what the enemy fields
+  const want = { inf: 0.26, mech: 0.12, abn: 0.03, sf: 0.03, art: 0.12, arm: 0.2, flak: 0.05, heli: 0.06, ftr: 0.06, bmb: 0.04, pat: 0.01 };
+  const rivals = wars.length ? wars : alive().filter(o => o.id !== nid && !allied(nid, o.id) && borders(nid, o.id)).map(o => o.id);
+  const ec = enemyComp(rivals.length ? rivals : []);
+  const shift = (from, to, v) => { const d = Math.min(v, want[from]); want[from] -= d; want[to] += d; };
+  if (ec.veh > 0.33) { shift('inf', 'heli', 0.05); shift('arm', 'bmb', 0.03); shift('inf', 'art', 0.02); }
+  if (ec.inf > 0.55) { shift('inf', 'arm', 0.08); shift('inf', 'mech', 0.04); shift('inf', 'art', 0.03); }
+  if (ec.air + ec.heli > 0.15) { shift('arm', 'flak', 0.07); shift('bmb', 'ftr', 0.03); shift('heli', 'ftr', 0.03); shift('inf', 'flak', 0.02); }
+  if (ec.sub > 0.02) shift('bmb', 'pat', 0.03);
   if (wars.length) {
-    const ec = enemyComp(wars);
-    if (ec.arm > 0.33) { want.air += 0.1; want.art += 0.05; want.arm -= 0.08; want.inf -= 0.07; }
-    if (ec.inf > 0.55) { want.arm += 0.1; want.art += 0.05; want.inf -= 0.15; }
-    if (ec.air > 0.18) { want.inf += 0.1; want.arm -= 0.05; want.air -= 0.05; }
-    // dug-in enemies need guns: artillery halves fort, bunker and anti-air bonuses
+    // dug-in enemies need guns: artillery and special forces ignore half of fort, bunker and anti-air bonuses
     let fz = 0, nf = 0;
-    for (const e of wars) for (const pid of D.owned[e]) if (PS[pid].nbrs.some(q => G.provs[q].owner === nid)) { const q = G.provs[pid]; fz += q.fort + (q.bunk || 0); nf++; }
-    if (nf && fz / nf >= 1.5) { want.art += 0.1; want.inf -= 0.05; want.arm -= 0.05; }
+    for (const e of wars) for (const pid of D.owned[e]) if (PS[pid].nbrs.some(q => G.provs[q].owner === nid)) { const q = G.provs[pid]; fz += q.b.fort + q.b.bunk; nf++; }
+    if (nf && fz / nf >= 1.5) { shift('inf', 'art', 0.06); shift('arm', 'sf', 0.03); }
   }
-  const have = emptyU(); let tot = 0;
-  for (const a of D.armiesBy[nid]) for (const t of UT) { have[t] += a.u[t]; tot += a.u[t]; }
-  for (const pid of owned) for (const it of G.provs[pid].q) { have[it.type] += 1; tot += 1; }
+  // fleets: worth having on a coast with rivals that sail or own ports; missiles once at war
+  let coastal = 0;
+  for (const pid of owned) if (PS[pid].coast) coastal++;
+  const rivalCoast = rivals.some(r => D.owned[r].some(pid => PS[pid].coast));
+  const navyWant = coastal && rivalCoast ? (wars.length ? 2 + 0.3 * coastal : 1 + 0.15 * coastal) : 0;
+  const seaMix = { pb: 0.35, dd: 0.3, sub: 0.2, cru: 0.15 };
+  if (ec.sub > 0.02) { seaMix.dd += 0.15; seaMix.pb -= 0.15; }
+  const mslWant = wars.length ? 1 + owned.length / 10 : 0;
+  const have = emptyU(); let landTot = 0, seaTot = 0, mslTot = 0;
+  const count = (t, v) => { have[t] += v; const d = UNITS[t].dom; if (d === 'sea') seaTot += v; else if (d === 'msl') mslTot += v; else landTot += v; };
+  for (const a of D.armiesBy[nid]) for (const t of UT) count(t, a.u[t]);
+  for (const pid of owned) for (const it of G.provs[pid].q) count(it.type, 1);
   const reserve = wars.length ? P.reserve * 0.3 : P.reserve;
+  // every other think, construction gets first call on the cash
+  const buildFirst = (n.ai.cycle || 0) % 2 === 1;
+  // and when its best project is not yet affordable, recruiting leaves the cash for it
+  if (buildFirst) { const need = aiBuild(n, wars, reserve, ts); if (need) n.ai.save = { c: need, until: G.t + 15 }; else n.ai.save = null; }
+  const sv = n.ai.save && n.ai.save.until > G.t ? n.ai.save.c : 0;
+  const uReserve = reserve + (sv && !(wars.length && ts[n.capital] > 3) ? sv : 0);
   const armyCap = 10 + owned.length * 1.8 + Math.max(0, n.rate.cash) * 4;
   // where each unit type can be trained right now
-  const site = t => {
+  let siteMemo = {};
+  const site = t => siteMemo[t] !== undefined ? siteMemo[t] : (siteMemo[t] = findSite(t));
+  const findSite = t => {
     let bestP = -1, bestS = -1;
     for (const pid of owned) {
       const p = G.provs[pid];
-      if (p.q.length >= 2 || p.cap || p.battle || !canTrain(p, t)) continue;
-      const s = ts[pid] + (t === 'inf' ? 0 : 0.5 * Math.max(...UNITS[t].fast.map(k => p.b[k]))) + Math.random() * 0.4;
+      if (p.q.length >= 2 || p.cap || p.siege || !canTrain(p, t)) continue;
+      let f = 0;
+      if (t !== 'inf') for (const k of UNITS[t].fast) f = Math.max(f, p.b[k]);
+      const s = ts[pid] + 0.5 * f + Math.random() * 0.4;
       if (s > bestS) { bestS = s; bestP = pid; }
     }
     return bestP;
   };
+  // how far each unit type is below its target, on one scale: land by share of the army,
+  // ships by share of the wanted fleet, missiles by how short the stock is
+  const gap = t => {
+    const d = UNITS[t].dom;
+    if (d === 'sea') return navyWant > seaTot ? 0.6 * (seaMix[t] * navyWant - have[t]) / navyWant : -1;
+    if (d === 'msl') return mslWant > mslTot ? 0.12 * (mslWant - mslTot) / mslWant : -1;
+    return want[t] - have[t] / Math.max(1, landTot);
+  };
   let made = 0;
-  while (made < 3 && tot < armyCap) {
-    if (n.rate.net < 0.25 && tot > 14 && !wars.length) break;
-    const order = UT.slice().sort((a, b) => (want[b] - have[b] / Math.max(1, tot)) - (want[a] - have[a] / Math.max(1, tot)));
-    let pick = null, where = -1;
-    for (const t of order) {
-      if (!canPay(n, unitCost(t)) || n.cash - UNITS[t].cost.cash < reserve) continue;
+  while (made < 3 && landTot + seaTot + mslTot < armyCap) {
+    if (n.rate.net < 0.25 && landTot > 14 && !wars.length) break;
+    const order = UT.map(t => [t, gap(t) + Math.random() * 0.01]).sort((a, b) => b[1] - a[1]);
+    let pick = null, where = -1, saving = false;
+    for (const [t, g] of order) {
+      // save up cash for what the forces are short of instead of filling up on whatever is cheapest
+      // (a missing material cannot be saved for, so then anything goes)
+      if (saving && g < 0.02) break;
+      if (g < -0.06 && t !== 'inf') continue;
+      const c = unitCost(t);
+      if (RES.some(k => k !== 'cash' && c[k] && n[k] < c[k])) continue;
       where = site(t);
-      if (where >= 0) { pick = t; break; }
+      if (where < 0) continue;
+      if (n.cash - c.cash < uReserve) { saving = true; continue; }
+      pick = t; break;
     }
     if (!pick) break;
     cmdRecruit(nid, where, pick);       // recruit near the front
-    have[pick] += 1; tot += 1; made++;
+    count(pick, 1); made++; siteMemo = {};
   }
-  aiBuild(n, wars, reserve, ts);
+  if (!buildFirst && !aiBuild(n, wars, reserve, ts)) n.ai.save = null;
 }
 // pick the most useful construction projects for this nation
 function aiBuild(n, wars, reserve, ts) {
   const nid = n.id, P = pers(n), owned = D.owned[nid];
-  if (n.cash < 120 * P.econ + reserve || Math.random() > 0.7) return;
+  if (n.cash < reserve + 40 || Math.random() > 0.7) return 0;
   const busy = owned.reduce((s, pid) => s + (G.provs[pid].bq.length ? 1 : 0), 0);
   const slots = Math.min(4, 1 + Math.floor(owned.length / 8)) - busy;
-  if (slots <= 0) return;
+  if (slots <= 0) return 0;
   const count = {};
   for (const k of BK) count[k] = 0;
   const levels = {};
   for (const k of BK) levels[k] = 0;
-  for (const pid of owned) for (const k of BK) { const l = G.provs[pid].b[k]; if (l > 0) count[k]++; levels[k] += l; }
+  const maxB = {};
+  for (const k of BK) maxB[k] = 0;
+  for (const pid of owned) for (const k of BK) { const l = G.provs[pid].b[k]; if (l > 0) count[k]++; levels[k] += l; maxB[k] = Math.max(maxB[k], l); }
   // how much of the rivals' strength flies
   const rivals = wars.length ? wars : alive().filter(o => o.id !== nid && !allied(nid, o.id) && borders(nid, o.id)).map(o => o.id);
   const airThreat = rivals.length ? airShare(rivals) : 0;
+  const coastWar = rivals.some(r => D.owned[r].some(pid => PS[pid].coast));
   // how badly we need more of a resource: high when the stock is low
   const short = r => clamp(1.5 - n[r] / 400, 0.05, 1.5);
   const opts = [];
   for (const pid of owned) {
     const p = G.provs[pid], d = PS[pid], t = ts[pid] || 0;
-    if (p.bq.length || p.cap || p.battle) continue;
+    if (p.bq.length || p.cap || p.siege) continue;
     const add = (k, sc) => {
       if (sc <= 0 || p.b[k] >= maxLvl(k) || (BLD[k].coast && !d.coast)) return;
-      opts.push([sc / (1 + p.b[k]) * (0.75 + Math.random() * 0.5), pid, k]);
+      const v = sc / (1 + p.b[k]) * (0.75 + Math.random() * 0.5);
+      if (v >= 0.15) opts.push([v, pid, k]);          // not worth the cash otherwise
     };
     // production: enough army bases, spread along the front, and at least one air base
     if (count.army < 1 + owned.length / 7) add('army', 2 + 0.5 * t + d.pop * 0.2);
     else if (p.b.army) add('army', 0.3 * t);
-    if (!count.airb && owned.length >= 3) add('airb', 2.2 + d.pop * 0.2 - 0.3 * t);
-    else if (p.b.airb && wars.length) add('airb', 0.6);
+    if (count.airb < 1 + owned.length / 12 && owned.length >= 3) add('airb', (count.airb ? 1.2 : 2.2) + d.pop * 0.2 - 0.3 * t);
+    else if (p.b.airb) add('airb', wars.length ? 0.6 : 0.2);
+    if (p.b.airb && maxB.airb < 2 && owned.length >= 6) add('airb', 3.2);      // one level-2 base for bombers
     // defence where it is needed; anti-air wherever rivals fly, and always some over the capital
-    const capB = n.capital === pid ? 1.5 : 1;
-    add('fort', (wars.length ? 0.9 : 0.3) * t * capB * P.caution);
-    if (p.b.fort) add('bunk', (wars.length ? 0.7 : 0.2) * t * capB * P.caution);
+    const capB = n.capital === pid ? 1.5 : 1, tc = Math.min(t, 5);
+    add('fort', (wars.length ? 0.9 : 0.3) * tc * capB * P.caution);
+    if (p.b.fort) add('bunk', (wars.length ? 0.7 : 0.2) * tc * capB * P.caution);
     add('aa', t * (0.1 + 4 * airThreat) * capB + (n.capital === pid && !p.b.aa ? 0.8 : 0));
     add('hosp', (wars.length ? 0.35 : 0.1) * t);
     // economy
     add('infra', P.econ * (d.cash + RES_RATE) * 1.4);
     add('recr', P.econ * (0.25 + d.pop * 0.12) * short('man'));
-    add('arms', P.econ * 0.8 * short('comp'));
-    add('naval', P.econ * d.cash * 0.5);
+    add('arms', P.econ * 1.4 * short('comp') + (wars.length && !count.arms ? 0.8 : 0));
+    add('naval', P.econ * d.cash * 0.5 + (coastWar && count.naval < 2 ? 1.4 : 0) + (coastWar && p.b.naval && maxB.naval < 3 ? 2.4 : 0));
     add('lab', (P.econ - 0.6) * (levels.lab < 1 + owned.length / 10 ? 1.5 : 0));
   }
   opts.sort((a, b) => b[0] - a[0]);
-  let made = 0;
-  for (const [, pid, k] of opts) {
+  let made = 0, need = 0, top = 0;
+  const keep = wars.length ? 15 : 40;
+  for (const [v, pid, k] of opts) {
     if (made >= slots) break;
+    if (need && v < 0.6 * top) break;      // saving for something better: do not fritter the cash away
     const c = buildCost(k, G.provs[pid].b[k]);
-    if (n.cash - c.cash < reserve || RES.some(r => r !== 'cash' && c[r] && n[r] - c[r] < 40)) continue;   // keep stock for units
+    if (RES.some(r => r !== 'cash' && c[r] && n[r] - c[r] < keep)) continue;   // keep stock for units
+    if (!top) top = v;
+    if (n.cash - c.cash < reserve) { if (!made && !need) need = c.cash; continue; }
     if (cmdBuild(nid, pid, k).ok) made++;
   }
+  return made ? 0 : need;       // cash the best project still needs
 }
 
 // ---------------------------------------------------------------- AI : military
 function mergeIdle(nid) {
   const groups = {};
-  for (const a of G.armies) if (a.owner === nid && a.at != null && !a.mv && !a.route.length) (groups[a.at] = groups[a.at] || []).push(a);
+  for (const a of G.armies) if (a.owner === nid && a.at != null && !a.mv && !a.route.length && !a.strike) { const k = a.at + domOf(a); (groups[k] = groups[k] || []).push(a); }
   for (const pid in groups) {
     const g = groups[pid];
     if (g.length < 2) continue;
@@ -1033,7 +1210,7 @@ function aiMilitary(n, defOnly) {
   const aggr = P.aggr * diffAggr;
   if (!defOnly) mergeIdle(nid);
   refresh();
-  let stacks = G.armies.filter(a => a.owner === nid && available(a));
+  let stacks = G.armies.filter(a => a.owner === nid && available(a) && domOf(a) === 'land');
   const wars = enemiesOf(nid);
   const used = new Set();
   const order = (a, pid) => { orderMove(a, pid); used.add(a); };
@@ -1050,7 +1227,7 @@ function aiMilitary(n, defOnly) {
     const p = G.provs[s.at];
     if (!p.battle) {
       // keep standing in an enemy province until it falls
-      if (p.owner !== nid && atWar(nid, p.owner)) used.add(s);
+      if (p.owner !== nid && atWar(nid, p.owner) && groundCount(s.u) >= 0.3) used.add(s);
       continue;
     }
     const fs = forcesIn(s.at, true);
@@ -1141,7 +1318,7 @@ function aiMilitary(n, defOnly) {
           const pr = predictAttack(nid, u, best.T);
           if (pr.win && pr.keep >= keepNeed * 0.9) {
             mergeIdle(nid);
-            const merged = G.armies.find(a => a.owner === nid && a.at === best.R && !a.mv);
+            const merged = G.armies.find(a => a.owner === nid && a.at === best.R && !a.mv && domOf(a) === 'land');
             if (merged) order(merged, best.T);
           }
         }
@@ -1180,6 +1357,104 @@ function aiMilitary(n, defOnly) {
         if (bp >= 0) { orderMove(s, bp); load[bp] = (load[bp] || 0) + unitPow(s.u); }
       }
     }
+  }
+}
+
+// fleets: fight or fall back, sink enemy ships, shell enemy ports (which keeps their garrison down
+// for the land attack), and gather in a home port in peacetime
+function aiNavy(n, defOnly) {
+  const nid = n.id, wars = enemiesOf(nid);
+  const fleets = G.armies.filter(a => a.owner === nid && available(a) && domOf(a) === 'sea' && !(a.hold > G.t));
+  if (!fleets.length) return;
+  const mine = f => f.nat === nid || allied(f.nat, nid);
+  for (const s of fleets) {
+    const here = s.at, p = G.provs[here];
+    if (p.battle) {
+      const fs = forcesIn(here, true);
+      for (let i = 0; i < 60; i++) roundForces(fs, 1, false);
+      const ml = fs.filter(mine).reduce((x, f) => x + unitCount(f.u), 0), fl = fs.filter(f => atWar(f.nat, nid)).reduce((x, f) => x + unitCount(f.u), 0);
+      if (ml < 0.5 && fl > 1) {
+        const esc = SEA_NB[here].filter(q => canEnter(nid, q) && !hostileHere(nid, q)).sort((a, b) => (G.provs[b].owner === nid) - (G.provs[a].owner === nid))[0];
+        if (esc !== undefined) { orderMove(s, esc); continue; }
+      }
+      s.hold = G.t + 6;
+      continue;
+    }
+    // shelling a port whose garrison is gone: stay a while if our troops are coming
+    if (p.owner !== nid && atWar(nid, p.owner) && G.t - s.since < 50 && PS[here].nbrs.some(q => (D.armyAt[q] || []).some(a => a.owner === nid))) continue;
+    let best = -1, bs = 0;
+    if (wars.length && !defOnly) {
+      const dj = dijkstra(nid, here, armySpeed(s), undefined, 'sea');
+      const focus = n.ai.focus && n.ai.focus.T;
+      for (let pid = 0; pid < NP; pid++) {
+        if (!PS[pid].coast || pid === here || !(dj.dist[pid] < 90)) continue;
+        const o = G.provs[pid].owner;
+        const fleet = (D.armyAt[pid] || []).filter(a => atWar(nid, a.owner) && domOf(a) === 'sea').reduce((x, a) => x + unitPow(a.u), 0);
+        if (!atWar(nid, o) && !fleet) continue;
+        let sc = fleet / 150 + (atWar(nid, o) ? 0.3 * provValue(pid, nid) : 0) + (pid === focus ? 4 : 0) - dj.dist[pid] * 0.03;
+        if (PS[pid].nbrs.some(q => (D.armyAt[q] || []).some(a => a.owner === nid && domOf(a) === 'land'))) sc += 2;
+        if (sc <= bs) continue;
+        const pr = predictAttack(nid, s.u, pid);
+        if (pr.win && pr.keep > 0.5) { bs = sc; best = pid; }
+      }
+    }
+    // defend our own coast against raiding fleets
+    if (best < 0) for (const pid of D.owned[nid]) {
+      if (!PS[pid].coast || pid === here) continue;
+      if (!(D.armyAt[pid] || []).some(a => atWar(nid, a.owner) && domOf(a) === 'sea')) continue;
+      const pr = predictAttack(nid, s.u, pid);
+      if (pr.win && pr.keep > 0.4) { best = pid; break; }
+    }
+    if (best >= 0) { orderMove(s, best); continue; }
+    // otherwise gather in the home port: our best naval base, or the capital's coast
+    if (p.owner === nid && p.b.naval) {
+      let port = here, pv = -1;
+      for (const pid of D.owned[nid]) { const q = G.provs[pid]; const v = q.b.naval * 2 + threatScore(nid, pid); if (PS[pid].coast && q.b.naval && v > pv) { pv = v; port = pid; } }
+      if (port !== here && SEA_NB[here].length && Math.random() < 0.5) orderMove(s, port);
+    } else if (p.owner !== nid) {
+      const home = D.owned[nid].find(pid => G.provs[pid].b.naval) ;
+      if (home !== undefined) orderMove(s, home);
+    }
+  }
+}
+// missiles: fire at the biggest enemy concentration, a dug-in province we are attacking, or a fleet
+function aiMissiles(n) {
+  const nid = n.id, wars = enemiesOf(nid);
+  if (!wars.length) return;
+  const sal = G.armies.filter(a => a.owner === nid && available(a) && domOf(a) === 'msl' && !a.strike);
+  if (!sal.length) return;
+  const focus = n.ai.focus && n.ai.focus.T;
+  const cands = new Set();
+  for (const e of wars) for (const pid of D.owned[e]) if (PS[pid].nbrs.some(q => G.provs[q].owner === nid || allied(G.provs[q].owner, nid)) || PS[pid].coast) cands.add(pid);
+  for (const a of G.armies) if (a.at != null && atWar(nid, a.owner)) cands.add(a.at);
+  for (const s of sal) {
+    let best = -1, bs = 2.5 + 0.8 * s.u.msl;
+    for (const pid of cands) {
+      if (!inRange(s.at, pid)) continue;
+      const p = G.provs[pid];
+      let sc = 0;
+      for (const a of D.armyAt[pid] || []) if (atWar(nid, a.owner)) sc += unitPow(a.u) / 120;
+      if (atWar(nid, p.owner)) {
+        sc += p.garrison * 0.25 + (p.b.fort + p.b.bunk + p.b.aa) * 0.5;
+        if (pid === focus) sc *= 2;
+        if ((D.armyAt[pid] || []).some(a => a.owner === nid)) sc *= 1.5;
+        if (isCapital(p)) sc += 1;
+      }
+      sc -= (p.b.aa + (D.armyAt[pid] || []).reduce((x, a) => x + a.u.flak + a.u.ftr, 0)) * 0.3;
+      if (sc > bs) { bs = sc; best = pid; }
+    }
+    if (best >= 0) { orderMove(s, best); continue; }
+    // nothing in range: move up to a city closer to the enemy
+    let to = -1, dmin = Infinity;
+    for (const pid of D.owned[nid]) {
+      if (pid === s.at || !inRange(s.at, pid) || G.provs[pid].battle) continue;
+      let d = Infinity;
+      for (const c of cands) d = Math.min(d, mslDist(pid, c));
+      if (d < dmin - 30) { dmin = d; to = pid; }
+    }
+    let dnow = Infinity;
+    for (const c of cands) dnow = Math.min(dnow, mslDist(s.at, c));
+    if (to >= 0 && ![...cands].some(c => inRange(s.at, c)) && dmin < dnow) orderMove(s, to);
   }
 }
 
@@ -1291,6 +1566,7 @@ function caretaker(n) {
   if (!n.alive) return;
   aiEconomy(n);
   aiMilitary(n, true);
+  aiNavy(n, true);
   for (const pr of G.proposals.slice()) {
     if (pr.to !== n.id) continue;
     if (pr.kind === 'ceasefire' && (shouldSeekPeace(n.id, pr.from) || evalProposal('ceasefire', n.id, pr.from).ok)) answerProposal(pr.id, true);
@@ -1302,6 +1578,8 @@ function aiThink(n) {
   opMemo = new Map();
   aiEconomy(n);
   aiMilitary(n);
+  aiNavy(n);
+  aiMissiles(n);
   n.ai.cycle = (n.ai.cycle || 0) + 1;
   opMemo = null;
   if (n.ai.cycle % 4 === 0) { aiDiplomacy(n); aiWar(n); }
@@ -1311,8 +1589,8 @@ function aiThink(n) {
 function cmdRecruit(nat, pid, type) {
   const n = G.nations[nat], p = G.provs[pid];
   if (p.owner !== nat) return { ok: false, msg: 'Not your province' };
-  if (p.cap || p.battle) return { ok: false, msg: 'Province is under siege' };
-  if (!canTrain(p, type)) return { ok: false, msg: `Needs a ${BLD[UNITS[type].need].n.toLowerCase()} here` };
+  if (p.cap || p.siege) return { ok: false, msg: 'Province is under siege' };
+  if (!canTrain(p, type)) return { ok: false, msg: needText(p, type) };
   if (p.q.length >= 6) return { ok: false, msg: 'Training queue is full' };
   const c = unitCost(type);
   if (!canPay(n, c)) return { ok: false, msg: 'Not enough resources' };
@@ -1365,8 +1643,11 @@ function cmdSplit(aid, mode) {
   const n = newArmy(a.owner, a.at); n.u = b;
   return { ok: true, msg: 'Army split', id: n.id };
 }
-function cmdMerge(nat, pid) {
-  const list = G.armies.filter(a => a.owner === nat && a.at === pid && !a.mv);
+function cmdMerge(nat, pid, dom) {
+  let list = G.armies.filter(a => a.owner === nat && a.at === pid && !a.mv && !a.strike);
+  // armies, fleets and missiles do not mix: merge the kind asked for, or the most common one here
+  if (!dom) { const c = {}; for (const a of list) c[domOf(a)] = (c[domOf(a)] || 0) + 1; dom = Object.keys(c).sort((x, y) => c[y] - c[x])[0]; }
+  list = list.filter(a => domOf(a) === dom);
   if (list.length < 2) return { ok: false, msg: 'Nothing to merge' };
   list.sort((x, y) => unitPow(y.u) - unitPow(x.u));
   for (let i = 1; i < list.length; i++) for (const t of UT) list[0].u[t] += list[i].u[t];
@@ -1420,7 +1701,7 @@ function step(dt) {
 }
 
 // ---------------------------------------------------------------- setup / save
-const SAVE_V = 3;
+const SAVE_V = 4;
 // the main province of a state: the one with the most people
 const mainOf = st => byState[st].reduce((a, b) => (PS[b].pop > PS[a].pop ? b : a));
 const startStock = f => ({ cash: 400 * f, man: 60 * f, sup: 90 * f, comp: 90 * f, fuel: 70 * f, elec: 40 * f, rare: 40 * f, rp: 0 });
@@ -1428,7 +1709,7 @@ function newGame(opts) {
   // pace: game seconds per real second at 1x speed (UI only); away: the world keeps running while the tab is closed
   opts = Object.assign({ player: 0, diff: 'normal', pace: 1, away: false }, opts || {});
   G = { v: SAVE_V, t: 0, acc1: 0, opts, nations: [], provs: [], armies: [], nextArmy: 1, wars: {}, treaties: [], nextTid: 1,
-        memory: [], proposals: [], nextProp: 1, log: [], seq: 0, flags: {}, grace: 240, wstat: {} };
+        memory: [], proposals: [], nextProp: 1, log: [], seq: 0, flags: {}, grace: 240, wstat: {}, stats: {} };
   NATIONS.forEach((def, i) => G.nations.push(Object.assign({
     id: i, name: def.name, short: def.short, color: def.color, pers: def.pers, player: i === opts.player, alive: true,
     capital: mainOf(def.cap), infamy: 0, rate: zeroRate(),
@@ -1452,8 +1733,10 @@ function newGame(opts) {
       a.u.inf = 2 + Math.round(Math.pow(pop, 0.3));
       const border = byState[st].some(q => PS[q].nbrs.some(r => G.provs[r].owner !== n.id));
       if (border && pop > 3) a.u.arm = 1;
-      if (pid === n.capital) { a.u.inf += 4; a.u.arm += 2; a.u.art += 2; a.u.air += 1; }
+      if (pid === n.capital) { a.u.inf += 4; a.u.arm += 2; a.u.art += 2; a.u.ftr += 1; }
     }
+    // a coastal capital starts with a small flotilla
+    if (PS[n.capital].coast) { const f = newArmy(n.id, n.capital); f.u.pb = 2; }
   }
   refresh(); computeRates();
   log('The map is drawn. Borders are quiet, for now.', 'info', {});
@@ -1466,6 +1749,7 @@ function load(str) {
   G = g;
   for (const a of G.armies) if (a.since === undefined) a.since = a.mv ? null : G.t;
   if (!G.opts.pace) G.opts.pace = 1;
+  if (!G.stats) G.stats = {};
   refresh(); computeRates(); return G;
 }
 const saveOk = o => !!o && o.v === SAVE_V && !!o.provs && o.provs.length === NP;
@@ -1476,7 +1760,7 @@ function advance(secs) {
 }
 
 return {
-  UT, UNITS, PERS, NATIONS, PS, MAXLVL: MAX_LVL, CAPTURE_T, RES, RESN, BLD, BK, byState, captureTime, entrench, plannedLvl, maxLvl, advance,
+  UT, UNITS, CATS, PERS, MSL_RANGE, domOf, needText, missileOk, isAirT, inRange, NATIONS, PS, MAXLVL: MAX_LVL, CAPTURE_T, RES, RESN, BLD, BK, byState, captureTime, entrench, plannedLvl, maxLvl, advance,
   get G() { return G; }, get D() { return D; },
   newGame, step, serialize, load, saveOk, refresh, computeRates,
   atWar, allied, hasTreaty, hasAccess, truceLeft, opinion, canEnter, borders,
