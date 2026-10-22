@@ -34,4 +34,18 @@ for (const a of g.armies) {
   for (const t of SIM.UT) if (!(a.u[t] >= 0)) throw new Error('bad units ' + JSON.stringify(a));
   if (a.at == null && !a.mv) throw new Error('army lost');
 }
+const mix = {};
+for (const a of g.armies) for (const t of SIM.UT) mix[t] = (mix[t] || 0) + a.u[t];
+console.log('units', SIM.UT.map(t => t + ':' + Math.round(mix[t] || 0)).join(' '), '| missiles hit', Math.round(g.stats.msl || 0));
+const bl = {};
+for (const p of g.provs) for (const k of SIM.BK) bl[k] = (bl[k] || 0) + p.b[k];
+const mx = {}; for (const p of g.provs) for (const k of ['airb','naval','arms']) mx[k] = Math.max(mx[k] || 0, p.b[k]);
+console.log('top levels', JSON.stringify(mx));
+console.log('research', g.nations.filter(n => n.alive).map(n => n.short.slice(0, 4) + ':' + Object.keys(n.tech).length + (n.rs ? '+' + n.rs.k : '') + '/' + Math.round(n.rp)).join(' '));
+console.log('buildings', SIM.BK.map(k => k + ':' + bl[k]).join(' '));
+for (const a of g.armies) {
+  const dom = SIM.domOf(a);
+  if (dom === 'sea' && a.at != null && !SIM.PS[a.at].coast) throw new Error('ship on land ' + JSON.stringify(a));
+  if (dom !== 'land' && SIM.UT.some(t => a.u[t] > 0.02 && SIM.UNITS[t].dom !== dom)) throw new Error('mixed army ' + JSON.stringify(a));
+}
 console.log('OK');
