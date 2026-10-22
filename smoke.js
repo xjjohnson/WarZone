@@ -25,11 +25,14 @@ const click = sel => { const el = d.querySelector(sel); if (!el) throw new Error
   console.log('started', UI.started, 'player', S.G.opts.player, 'panel:', d.querySelector('#sheet h3') && d.querySelector('#sheet h3').textContent);
   console.log('res:', d.getElementById('res').textContent.replace(/\s+/g, ' '));
   // recruit
-  click('[data-act="recruit"][data-t="inf"]'); click('[data-act="build"][data-k="fort"]');
+  click('[data-act="recruit"][data-t="inf"]'); click('[data-act="recruit"][data-t="arm"]'); click('[data-act="build"][data-k="fort"]');
+  await sleep(350);
+  console.log('construction:', JSON.stringify(S.G.provs[UI.selP].bq), 'queue:', S.G.provs[UI.selP].q.map(q => q.type).join(','));
+  click('[data-act="cancelbuild"]'); await sleep(350); click('[data-act="build"][data-k="army"]'); await sleep(50);
   // tabs
   for (const t of ['forces', 'dip', 'intel', 'map']) { click(`[data-act="tab"][data-v="${t}"]`); await sleep(350); console.log('tab', t, 'len', d.getElementById('sheet').innerHTML.length); }
   // select own army, then a neighbour
-  const mine = S.G.armies.find(a => a.owner === 2);
+  const mine = S.G.armies.find(a => a.owner === 2 && a.at != null && S.PS[a.at].nbrs.some(q => S.G.provs[q].owner !== 2));
   click(`[data-act="tab"][data-v="forces"]`); await sleep(350);
   click(`[data-act="selarmy"][data-a="${mine.id}"]`); await sleep(350);
   console.log('army card:', d.querySelector('#sheet h3').textContent);

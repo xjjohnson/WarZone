@@ -60,6 +60,9 @@ b, strong { font-weight: 600; }
 .bd { fill: none; stroke: var(--stroke); stroke-width: .5; opacity: .55; pointer-events: none; }
 .bd.nat { stroke: var(--ink); stroke-width: 1.5; opacity: .85; }
 .coast { fill: none; stroke: var(--ink); stroke-width: 1; opacity: .5; pointer-events: none; }
+.stl { fill: none; stroke: var(--ink); stroke-width: .8; opacity: .4; stroke-linejoin: round; pointer-events: none; }
+.stlab { font-family: var(--mono); font-weight: 600; fill: var(--badge-ink); text-anchor: middle; pointer-events: none; paint-order: stroke; stroke: rgba(255,255,255,.35); opacity: .8; }
+.city { fill: var(--badge-ink); pointer-events: none; }
 .sealane { fill: none; stroke: var(--ink2); stroke-dasharray: 3 5; stroke-width: 1; pointer-events: none; opacity: .8; }
 .lab { font-family: var(--mono); font-weight: 600; fill: var(--badge-ink); text-anchor: middle; pointer-events: none; paint-order: stroke; stroke: rgba(255,255,255,.35); stroke-width: 2px; }
 .capdot { fill: none; stroke: var(--badge-ink); stroke-width: 1.4; pointer-events: none; }
@@ -104,6 +107,14 @@ h4:first-child { margin-top: 0; }
 .bar { height: 5px; background: var(--paper2); border: 1px solid var(--line); margin-top: 3px; }
 .bar i { display: block; height: 100%; background: var(--ink); }
 .bar.warn i { background: var(--warn); }
+.blds { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 6px; margin: 6px 0; }
+.btn.bld { width: 100%; min-width: 0; }
+.bld .bn { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.bld small.ef { font-family: var(--body); font-size: 11.5px; }
+.pips { display: inline-flex; gap: 2px; flex: none; }
+.pips i { width: 7px; height: 7px; border: 1px solid currentColor; }
+.pips i.on { background: currentColor; }
+.pips i.q { background: repeating-linear-gradient(45deg, currentColor 0 1.5px, transparent 1.5px 3px); }
 .btns { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
 .btn { background: var(--paper); border: 1px solid var(--ink); color: var(--ink); padding: 6px 11px; min-height: 36px; font: 600 13px var(--body); cursor: pointer; border-radius: 2px; text-align: left; line-height: 1.15; }
 .btn small { display: block; font: 500 10.5px var(--mono); color: var(--ink2); margin-top: 2px; }
