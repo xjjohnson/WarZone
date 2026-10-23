@@ -7,6 +7,9 @@ const S = SIM, PS = S.PS, UNITS = S.UNITS, UT = S.UT;
 const $ = (s, r) => (r || document).querySelector(s);
 const NS = 'http://www.w3.org/2000/svg';
 const SAVE_KEY = 'frontline_usa_save_v1';
+const BACKUP_KEY = 'frontline_usa_save_backup';   // the save as it was before a new version first loaded it
+// version info from CHANGELOG.md, injected by make.js
+const BINFO = typeof BUILD !== 'undefined' ? BUILD : { version: 'dev', code: 0, date: '', notes: [], repo: '' };
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const G = () => S.G;
 const me = () => G().opts.player;
@@ -1006,6 +1009,7 @@ function intelPanel() {
   h += `<h4>Game</h4><div class="opts">${paceSeg(pk, 'pace')}</div><p class="note">${paceHint(pk)} Speed buttons multiply this pace.</p>`;
   h += `<div class="opts">World runs while away: ${awaySeg(g.opts.away, 'away')}</div>`;
   h += '<div class="btns"><button class="btn" data-act="save">Save game</button><button class="btn warn" data-act="newgame">New game</button></div>';
+  h += updatesHtml();
   h += `<details><summary>How to play</summary>
   <p>Drag an army badge onto a province to send it there, or tap the badge and then the province. Land armies only travel along the road network (the thin lines; the small triangles are waypoints) and can stop and dig in at any waypoint or city. The dashed line shows the route, and red means there is no way through. One that runs into a fight on the way stops to fight, then carries on once it wins. Armies need passage rights to cross land you are at peace with.</p>
   <p>A badge's symbol shows what an army mostly is: a crossed box for infantry, an oval for armor, a dot for artillery, wings for aircraft. Its card lists every unit with attack, HP and speed (research included), plus what it is strong against and what it should avoid.</p>
@@ -1064,7 +1068,7 @@ function panelSig() {
     if (m < 0) return s + '|observer';
     s += `|${UI.dipOpen}|${UI.dipMsg}|` + g.proposals.map(p => p.id).join(',') + '|' + g.nations.filter(o => o.alive).map(o => o.id + statusTags(m, o.id).length + Math.round(S.opinion(o.id, m).total / 4)).join(',');
   } else {
-    s += '|' + g.seq + '|' + g.opts.pace + g.opts.away + '|' + g.nations.map(o => (o.alive ? 1 : 0) + ':' + S.D.owned[o.id].length).join(',');
+    s += '|' + g.seq + '|' + g.opts.pace + g.opts.away + '|' + UPD.state + '|' + g.nations.map(o => (o.alive ? 1 : 0) + ':' + S.D.owned[o.id].length).join(',');
   }
   return s;
 }
@@ -1132,7 +1136,11 @@ const awaySeg = (on, act) => `<div class="seg" role="group" aria-label="World ru
 const paceHint = k => PACES.find(p => p.k === k).hint;
 function showStart() {
   let saved = null;
-  try { const s = localStorage.getItem(SAVE_KEY); if (s) { const o = JSON.parse(s); if (S.saveOk(o)) saved = { day: clockText(o.t, o.opts.pace || 1), who: o.opts.player >= 0 ? o.nations[o.opts.player].short : 'Observer' }; } } catch (_) {}
+  let badSave = '';
+  try {
+    const s = localStorage.getItem(SAVE_KEY);
+    if (s) { const o = JSON.parse(s); badSave = S.saveWhy(o); if (!badSave) saved = { day: clockText(o.t, o.opts.pace || 1), who: o.opts.player >= 0 ? o.nations[o.opts.player].short : 'Observer' }; }
+  } catch (_) { badSave = 'The save is damaged.'; }
   let cards = '';
   S.NATIONS.forEach((def, i) => {
     const ps = PS.filter(p => def.states.includes(p.st));
@@ -1143,6 +1151,7 @@ function showStart() {
   modal(`<div class="title">Frontline<br>USA</div>
   <p class="lede">Real-time grand strategy on the American map. Ten rival powers, one continent. No premium currency, no timers to buy out, no forced ending.</p>
   ${saved ? `<div class="btns"><button class="btn pri" data-act="continue">Continue &middot; ${saved.who}, ${saved.day}</button></div>` : ''}
+  ${badSave ? `<p class="note">Your saved game cannot be continued. ${badSave}</p>` : ''}
   <h4>AI difficulty</h4>
   <div class="opts"><div class="seg" role="group" aria-label="AI difficulty">${['easy', 'normal', 'hard'].map(d => `<button data-act="diff" data-v="${d}" aria-pressed="${d === startDiff}">${d[0].toUpperCase() + d.slice(1)}</button>`).join('')}</div></div>
   <h4>Game pace</h4>
@@ -1175,14 +1184,17 @@ function saveNow(quiet) {
   catch (_) { if (!quiet) toast('Could not save in this browser', 'bad'); }
 }
 function loadSaved() {
+  let s;
+  try { s = localStorage.getItem(SAVE_KEY); } catch (_) { return false; }
+  if (!s) return false;
   try {
-    const s = localStorage.getItem(SAVE_KEY);
-    if (!s) return false;
+    const o = JSON.parse(s);
+    if (o.build !== BINFO.version || o.v !== S.SAVE_V) { try { localStorage.setItem(BACKUP_KEY, s); } catch (_) {} }
     S.load(s); afterStart(); resumeFromSave(); return true;
-  } catch (_) { return false; }
+  } catch (e) { toast('Could not continue: ' + (e.message || 'the save is damaged'), 'bad'); return true; }
 }
 // remember when (in real time) the world was last advanced, and whether it was paused
-function stamp() { const g = G(); if (g) { g.wall = Date.now(); g.paused = UI.speed === 0; } }
+function stamp() { const g = G(); if (g) { g.wall = Date.now(); g.paused = UI.speed === 0; g.build = BINFO.version; } }
 function resumeFromSave() {
   const g = G();
   if (g.paused) { setSpeed(0); toast('Paused. Press play to resume.', 'info'); return; }
@@ -1221,6 +1233,80 @@ function catchUp(ms) {
     renderHeader(); dirty();
   };
   setTimeout(slice, 0);
+}
+
+// ------------------------------------------------------------ updates
+// New versions are published as GitHub releases of BINFO.repo (tag v1.2.3, with the APK and index.html attached).
+// The Android app downloads the new APK; the web copy on GitHub Pages just reloads. Other copies (the Claude
+// artifact, a local file) do not go online at all.
+const SEEN_KEY = 'frontline_usa_seen_version';
+const UPD = { state: 'idle', rel: null, at: 0, msg: '' };   // state: idle, checking, current, newer, error
+const inApp = () => !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+const onPages = () => /\.github\.io$/.test(location.hostname);
+const canCheck = () => !!BINFO.repo && typeof fetch === 'function' && (inApp() || onPages());
+const relUrl = () => `https://github.com/${BINFO.repo}/releases/latest`;
+const verCode = v => { const m = /(\d+)\.(\d+)\.(\d+)/.exec(v || ''); return m ? +m[1] * 10000 + +m[2] * 100 + +m[3] : 0; };
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+async function checkUpdate(manual) {
+  if (!canCheck() || UPD.state === 'checking') return;
+  UPD.state = 'checking'; UPD.at = Date.now(); if (manual) dirty();
+  try {
+    const r = await fetch(`https://api.github.com/repos/${BINFO.repo}/releases/latest`, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store' });
+    if (!r.ok) throw new Error(r.status === 404 ? 'no release published yet' : 'server answered ' + r.status);
+    const j = await r.json(), apk = (j.assets || []).find(a => /\.apk$/i.test(a.name));
+    UPD.rel = {
+      version: String(j.tag_name || '').replace(/^v/, ''), date: (j.published_at || '').slice(0, 10),
+      notes: String(j.body || '').split('\n').filter(l => /^\s*[-*] /.test(l)).map(l => l.replace(/^\s*[-*] /, '').trim()),
+      apk: apk ? apk.browser_download_url : null, page: j.html_url || relUrl(),
+    };
+    const newer = verCode(UPD.rel.version) > BINFO.code;
+    UPD.state = newer ? 'newer' : 'current';
+    if (newer && !UPD.told) { UPD.told = true; toast(`Version ${UPD.rel.version} is out. Get it under Updates in the Intel tab.`, 'ok'); }
+    if (manual && !newer) toast('You have the latest version', 'ok');
+  } catch (e) {
+    UPD.state = 'error'; UPD.msg = (e && e.message) || 'offline';
+    if (manual) toast('Could not check for updates (' + UPD.msg + ')', 'bad');
+  }
+  const b = $('#updBadge'); if (b) b.hidden = UPD.state !== 'newer';
+  dirty();
+}
+function getUpdate() {
+  const rel = UPD.rel;
+  if (!rel) return;
+  if (UI.started && G()) saveNow(true);
+  if (inApp()) {
+    // the app hands links outside itself to the phone's browser, which downloads the APK; tapping it installs over this one
+    location.href = rel.apk || rel.page;
+    toast('Downloading. When it finishes, open the file to install. Your game is saved and carries over.', 'ok');
+  } else location.replace(location.pathname + '?v=' + encodeURIComponent(rel.version));
+}
+function restoreBackup() {
+  try {
+    const b = localStorage.getItem(BACKUP_KEY);
+    if (!b) { toast('No backup', 'bad'); return; }
+    if (UI.confirm !== 'restore') { UI.confirm = 'restore'; dirty(); return; }
+    UI.confirm = '';
+    localStorage.setItem(SAVE_KEY, b); localStorage.removeItem(BACKUP_KEY);
+    S.load(b); afterStart(); toast('Backup restored', 'ok');
+  } catch (e) { toast('Could not restore: ' + (e.message || 'damaged backup'), 'bad'); }
+}
+function updatesHtml() {
+  const rel = UPD.rel, newer = UPD.state === 'newer';
+  let h = `<h4>Updates</h4><p class="note">You have version ${BINFO.version}${BINFO.date ? ' (' + BINFO.date + ')' : ''}.`;
+  if (!canCheck()) h += ` This copy does not check for updates. The newest version and the Android app are on the <a href="${relUrl()}" target="_blank" rel="noopener">releases page</a>.</p>`;
+  else {
+    h += ' ' + ({ idle: '', checking: 'Checking&hellip;', current: 'It is the latest.', error: 'Could not reach the update server.' }[UPD.state] || '');
+    h += newer ? ` <b>Version ${esc(rel.version)} is out${rel.date ? ' (' + rel.date + ')' : ''}.</b>` : '';
+    h += '</p><div class="btns">';
+    if (newer) h += `<button class="btn pri" data-act="updget">${inApp() ? (rel.apk ? 'Download update' : 'Open release page') : 'Reload to update'}</button>`;
+    h += `<button class="btn" data-act="updcheck"${UPD.state === 'checking' ? ' disabled' : ''}>Check for updates</button></div>`;
+    if (newer && inApp()) h += '<p class="note">Android asks once to allow installs from your browser. Your saved game carries over to the new version.</p>';
+  }
+  const notes = newer && rel.notes.length ? rel.notes : BINFO.notes, nv = newer && rel.notes.length ? rel.version : BINFO.version;
+  if (notes.length) h += `<details><summary>What's new in ${esc(nv)}</summary>${notes.map(n => `<p>${esc(n)}</p>`).join('')}</details>`;
+  let backup = false; try { backup = !!localStorage.getItem(BACKUP_KEY); } catch (_) {}
+  if (backup) h += `<div class="btns"><button class="btn${UI.confirm === 'restore' ? ' warn' : ''}" data-act="restore">${UI.confirm === 'restore' ? 'Tap again: replace this game with the backup' : 'Restore save from before the last update'}</button></div>`;
+  return h;
 }
 
 // ------------------------------------------------------------ actions (delegated clicks)
@@ -1281,6 +1367,9 @@ document.addEventListener('click', e => {
     case 'pyes': { const r = S.answerProposal(+d.id, true); toast(r.msg, r.ok ? 'ok' : 'bad'); dirty(); break; }
     case 'pno': { const r = S.answerProposal(+d.id, false); toast(r.msg, 'info'); dirty(); break; }
     case 'save': saveNow(); break;
+    case 'updcheck': checkUpdate(true); break;
+    case 'updget': getUpdate(); break;
+    case 'restore': restoreBackup(); break;
     case 'newgame': saveNow(true); UI.started = true; showStart(); break;
     case 'keep': closeModal(); break;
     case 'watch': G().opts.player = -1; closeModal(); dirty(); break;
@@ -1361,6 +1450,16 @@ function boot(data) {
 const hot = window.claude && window.claude.hot;
 try { if (hot && hot.snapshot) hot.snapshot(() => ({ save: UI.started && G() ? S.serialize() : null, ui: { speed: UI.speed } })); } catch (_) {}
 if (hot && hot.ready) hot.ready(boot); else boot((hot && hot.data) || {});
-document.addEventListener('visibilitychange', () => { if (document.hidden && UI.started && G() && !UI.modal) saveNow(true); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { if (UI.started && G() && !UI.modal) saveNow(true); }
+  else if (Date.now() - UPD.at > 3600e3) checkUpdate(false);
+});
+setTimeout(() => checkUpdate(false), 8000);
+setInterval(() => checkUpdate(false), 6 * 3600e3);
+try {
+  const seen = localStorage.getItem(SEEN_KEY);
+  if (seen && seen !== BINFO.version) setTimeout(() => toast(`Updated to version ${BINFO.version}. See what's new under Updates in the Intel tab.`, 'ok'), 1500);
+  localStorage.setItem(SEEN_KEY, BINFO.version);
+} catch (_) {}
 window.__flusa = { UI, S, drawMap, renderPanel, catchUp, fmtDur };
 })();

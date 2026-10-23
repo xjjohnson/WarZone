@@ -2,3 +2,4 @@ node_modules/
 wrapped.html
 *.png
 frontline-usa.html
+!app/android/app/src/main/res/**/*.png

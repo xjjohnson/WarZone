@@ -2207,10 +2207,26 @@ function newGame(opts) {
   return G;
 }
 function serialize() { return JSON.stringify(G); }
+// Save upgrades. When SAVE_V goes up, add MIGRATE[old] that turns a version-old save into version old+1,
+// so games in progress survive the update. Saves older than SAVE_MIN (before the road map) cannot be upgraded.
+const SAVE_MIN = 5;
+const MIGRATE = {};
+function saveWhy(o) {
+  if (!o || !o.provs || !o.nations || !o.opts) return 'The save is damaged.';
+  if (o.provs.length !== NP) return 'This save is from an older version of the map.';
+  if (!(o.v >= SAVE_MIN)) return 'This save is from an older version of the game that cannot be upgraded.';
+  if (o.v > SAVE_V) return 'This save is from a newer version of the game. Update to continue it.';
+  for (let v = o.v; v < SAVE_V; v++) if (!MIGRATE[v]) return 'This save cannot be upgraded to this version.';
+  return '';
+}
+const saveOk = o => !saveWhy(o);
 function load(str) {
   const g = JSON.parse(str);
-  if (!saveOk(g)) throw new Error('This save is from an older version of the map');
+  const why = saveWhy(g);
+  if (why) throw new Error(why);
+  while (g.v < SAVE_V) { MIGRATE[g.v](g); g.v++; }
   G = g;
+  // fields added without a version bump get their defaults here
   for (const a of G.armies) if (a.since === undefined) a.since = a.mv ? null : G.t;
   if (!G.opts.pace) G.opts.pace = 1;
   if (!G.stats) G.stats = {};
@@ -2219,7 +2235,6 @@ function load(str) {
   for (const n of G.nations) { if (!n.tech) n.tech = {}; if (n.rs === undefined) n.rs = null; calcMods(n); }
   refresh(); computeRates(); return G;
 }
-const saveOk = o => !!o && o.v === SAVE_V && !!o.provs && o.provs.length === NP;
 // run the world forward by `secs` of game time (offline progress, tests)
 function advance(secs) {
   let left = secs;
@@ -2231,7 +2246,7 @@ return {
   TECH, TK, BRANCHES, techCost, pourRate, techOpen, cmdResearch, cmdCancelResearch, modsOf, mslRange, hasTech,
   UT, UNITS, CATS, PERS, MSL_RANGE, domOf, needText, missileOk, isAirT, inRange, NATIONS, PS, MAXLVL: MAX_LVL, CAPTURE_T, RES, RESN, BLD, BK, byState, captureTime, entrench, plannedLvl, maxLvl, advance,
   get G() { return G; }, get D() { return D; },
-  newGame, step, serialize, load, saveOk, refresh, computeRates,
+  newGame, step, serialize, load, saveOk, saveWhy, SAVE_V, refresh, computeRates,
   atWar, allied, hasTreaty, hasAccess, truceLeft, opinion, canEnter, borders,
   unitPow, unitCount, armySpeed, routeTime, findRoute, nodeRoute, nearestNode, nodeIn, NODES, NODE_P, NODES_OF, ROADS: MAPD.roads, predictAttack, defBonus, maxGar,
   buildCost, buildTime, unitCost, canPay, provRates, canTrain, trainTime,
