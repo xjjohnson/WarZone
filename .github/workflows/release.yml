@@ -1,0 +1,118 @@
+# Builds the game and the Android app on every push and pull request.
+# On main, when CHANGELOG.md has a version that has no release yet, it publishes a GitHub release
+# (the APK, index.html and version.json) that the game's Updates screen finds, and puts the web version on GitHub Pages.
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Build the game
+        run: node make.js
+
+      - name: Quick all-AI test
+        run: node test.js 5 normal
+
+      - name: Read the version
+        id: ver
+        run: echo "version=$(node -p "require('./dist/version.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Is this a new version?
+        id: new
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ steps.ver.outputs.version }}" > /dev/null 2>&1; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "v${{ steps.ver.outputs.version }} is already released; add a new entry to CHANGELOG.md to publish an update."
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Signing key
+        if: steps.new.outputs.release == 'true'
+        env:
+          KEY_B64: ${{ secrets.FRONTLINE_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$KEY_B64" ]; then
+            echo "::error::Add the FRONTLINE_KEYSTORE_B64 and FRONTLINE_KEYSTORE_PASSWORD repository secrets to publish releases."
+            exit 1
+          fi
+          echo "$KEY_B64" | base64 -d > "$RUNNER_TEMP/frontline.jks"
+          echo "FRONTLINE_KEYSTORE=$RUNNER_TEMP/frontline.jks" >> "$GITHUB_ENV"
+
+      - name: Build the APK
+        working-directory: app
+        env:
+          FRONTLINE_KEYSTORE_PASSWORD: ${{ secrets.FRONTLINE_KEYSTORE_PASSWORD }}
+        run: |
+          npm ci
+          mkdir -p www && cp -r ../dist/. www/
+          npx cap sync android
+          cd android
+          ./gradlew assembleRelease --no-daemon
+          cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/frontline-usa-${{ steps.ver.outputs.version }}.apk"
+
+      - name: Keep the APK with this run
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontline-usa-${{ steps.ver.outputs.version }}-apk
+          path: frontline-usa-${{ steps.ver.outputs.version }}.apk
+
+      - name: Publish the release
+        if: steps.new.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          node -e "const v=require('./dist/version.json'); console.log(v.notes.map(n => '- ' + n).join('\n'))" > notes.md
+          gh release create "v$V" "frontline-usa-$V.apk" dist/index.html dist/version.json \
+            --title "Frontline USA $V" --notes-file notes.md --target "$GITHUB_SHA"
+
+      - name: Prepare the web version
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  pages:
+    # needs GitHub Pages turned on (Settings > Pages > Source: GitHub Actions); a failure here does not stop releases
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,11 @@
+{
+  "version": "1.0.0",
+  "code": 10000,
+  "date": "2026-10-23",
+  "notes": [
+    "First Android app build. The game checks for new versions and downloads them from the Updates section of the Intel tab.",
+    "Saves now carry over between versions, and the game keeps a backup of your last save before an update touches it.",
+    "Includes everything so far: city provinces and roads, seven resources, city buildings, 16 unit types, research, the market, missions, the terrain map, and a late game that keeps going."
+  ],
+  "repo": "xjjohnson/WarZone"
+}
